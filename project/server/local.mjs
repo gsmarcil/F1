@@ -8,7 +8,7 @@ import { database } from './test/d1.mjs';
 const need = name => { const value = process.env[name]; if (!value || value.length < 32) { console.error('Set ' + name + ' (at least 32 characters).'); process.exit(1); } return value; };
 const env = { DB: database(), ENROLL_KEY: need('SENTINEL_ENROLL_KEY'), ADMIN_TOKEN: need('SENTINEL_ADMIN_TOKEN'), DATA_KEY: process.env.SENTINEL_DATA_KEY || need('SENTINEL_ADMIN_TOKEN') + '-local-data',
   RESPONSE_MODE: process.env.SENTINEL_RESPONSE_MODE, DECISION_FALLBACK: process.env.SENTINEL_DECISION_FALLBACK, DECISION_RELEASE: process.env.SENTINEL_DECISION_RELEASE, WATCHLIST: process.env.SENTINEL_WATCHLIST, FLEET_BLOCK: process.env.SENTINEL_FLEET_BLOCK, LEARN_FROM: process.env.SENTINEL_LEARN_FROM, TOR_EXITS: process.env.SENTINEL_TOR_EXITS, INGEST_TOKEN: process.env.SENTINEL_INGEST_TOKEN, ALERT_WEBHOOK_URL: process.env.SENTINEL_ALERT_WEBHOOK_URL, AI_PROVIDER: process.env.SENTINEL_AI_PROVIDER || 'none',
-  AI_BASE_URL: process.env.SENTINEL_AI_BASE_URL, AI_MODEL: process.env.SENTINEL_AI_MODEL, AI_API_KEY: process.env.SENTINEL_AI_API_KEY };
+  AI_BASE_URL: process.env.SENTINEL_AI_BASE_URL, AI_MODEL: process.env.SENTINEL_AI_MODEL, AI_API_KEY: process.env.SENTINEL_AI_API_KEY, AI_LAB_RUN_ID: process.env.SENTINEL_AI_LAB_RUN_ID, AI_LAB_CASE_ID: process.env.SENTINEL_AI_LAB_CASE_ID };
 const server = http.createServer(async (req, res) => {
   const chunks = []; for await (const chunk of req) chunks.push(chunk);
   const background = [];
