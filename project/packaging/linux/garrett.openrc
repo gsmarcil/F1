@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+# garrett, the Sentinel agent, on a machine that starts its services with OpenRC (Alpine and many small devices).
+# The same as the systemd unit: enrol first if the configuration names a service, run as root, start again if it
+# ever stops, and let through whatever was refused when it is stopped.
+name="garrett"
+description="garrett (Sentinel agent)"
+supervisor="supervise-daemon"
+command="/usr/bin/garrett"
+command_args="run"
+respawn_delay=20
+respawn_max=0
+output_log="/var/log/garrett.log"
+error_log="/var/log/garrett.log"
+
+depend() {
+	use net
+	after firewall localmount
+}
+
+start_pre() {
+	checkpath -d -m 0700 /var/lib/garrett
+	/usr/bin/garrett auto || true
+}
+
+stop_post() {
+	/usr/lib/garrett/unblock || true
+}

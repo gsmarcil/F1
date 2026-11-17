@@ -1,0 +1,67 @@
+# garrett, the Sentinel agent, on every node of a cluster. Each node enrols itself with the shared enrolment key the first
+# time its pod starts and keeps its own credential on the node.
+#
+# hostPID and hostNetwork let it see the node's own processes and connections, not just its container's.
+# SYS_PTRACE and DAC_READ_SEARCH are for reading other processes' program paths, NET_ADMIN for the kernel's
+# process-start feed and for refusing shared attacker addresses when the service has fleet blocking on, and KILL
+# for pausing or stopping a hostile program.
+#
+# Build the image from the repository root:  docker build -f deploy/Dockerfile -t garrett .
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: garrett
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: garrett-enrolment
+  namespace: garrett
+stringData:
+  server: "https://REPLACE-WITH-YOUR-SENTINEL-SERVICE"
+  key: "REPLACE-WITH-YOUR-ENROLMENT-KEY"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: garrett
+  namespace: garrett
+spec:
+  selector:
+    matchLabels: {app: garrett}
+  template:
+    metadata:
+      labels: {app: garrett}
+    spec:
+      hostPID: true
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: agent
+          image: garrett:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SENTINEL_SERVER
+              valueFrom: {secretKeyRef: {name: garrett-enrolment, key: server}}
+            - name: SENTINEL_ENROLL_KEY
+              valueFrom: {secretKeyRef: {name: garrett-enrolment, key: key}}
+            - name: SENTINEL_LABEL
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            # kill (default) | decide | pause | report. The service's RESPONSE_MODE can hold agents to less.
+            - name: SENTINEL_MODE
+              value: "kill"
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_ADMIN", "SYS_PTRACE", "KILL", "DAC_READ_SEARCH"]
+          resources:
+            requests: {cpu: 20m, memory: 48Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/sentinel}
+      volumes:
+        - name: state
+          hostPath: {path: /var/lib/garrett-node, type: DirectoryOrCreate}

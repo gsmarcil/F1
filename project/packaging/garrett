@@ -1,0 +1,77 @@
+#!/bin/sh
+# garrett: the Sentinel agent on this machine.
+#
+# Installed, it already protects this machine by itself: it watches, ends what is hostile, and keeps its cases here.
+#   garrett cases                     the latest cases on this machine
+#   sudo garrett trust <case>         this program is mine: leave it alone
+#   sudo garrett stop|release <case>  decide a program the agent paused
+#   sudo garrett restore <case>       put back what was cleaned up after a stop: quarantined files, startup entries
+#   sudo garrett confirm <case>       that was an attack: never leave that program running again
+#   garrett learned                   what this machine has learned from your verdicts
+#   garrett shield                    the privacy shield: trackers refused at the firewall, and what is left open
+#   garrett traffic                   which programs here talk to which trackers
+#   garrett hardware                  what this machine says about its firmware, boot chain and kernel
+#   sudo garrett update               install the newest version now (it also does this by itself, a few times a day)
+#
+# To make it part of a fleet, enrol it with your Sentinel service:
+#   sudo garrett enroll --server https://your-service --key <enrolment key> [--mode kill|decide|pause|report]
+#   garrett status
+#   sudo garrett forget
+#
+# Unattended (images, cloud-init, configuration management): put lines in the configuration file before installing.
+#   SERVER=https://your-service     with ENROLL_KEY=...: the service enrols this machine itself on first start
+#   MODE=kill|decide|pause|report   what to do about a hostile program (default: kill)
+#   LABEL=name                      the name this machine enrols under (default: its host name)
+#   CLEAN=off                       stop hostile programs but leave their files and startup entries alone
+#   UPDATE=off                      never install a newer version by itself
+#   SHIELD=off                      no privacy shield: measure and refuse no trackers
+#   LEARN_HOURS=24                  how long a fresh install learns the machine before it acts on a program that
+#                                   only looks suspicious (0: act on everything at once)
+set -eu
+LIB=${GARRETT_LIB:-/usr/lib/garrett}
+STATE=${GARRETT_STATE_DIR:-/var/lib/garrett}
+CONF=${GARRETT_CONF:-/etc/garrett/garrett.conf}
+AGENT=$LIB/garrett-agent
+setting() { [ -r "$CONF" ] && sed -n "s/^$1=//p" "$CONF" | tail -n 1 || true; }
+restart() {
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl enable garrett.service >/dev/null 2>&1 || true
+    systemctl restart garrett.service
+  elif [ "$(uname -s)" = Darwin ] && [ -f /Library/LaunchDaemons/com.garrett.agent.plist ]; then
+    launchctl kickstart -k system/com.garrett.agent >/dev/null 2>&1 || true
+  fi
+}
+case "${1:-}" in
+  enroll)
+    "$AGENT" --state-dir "$STATE" "$@"
+    restart
+    echo "garrett is running and reporting to your service."
+    ;;
+  forget)
+    "$AGENT" --state-dir "$STATE" forget
+    restart
+    echo "This machine no longer reports to a service. garrett keeps protecting it by itself."
+    ;;
+  auto)
+    # Used by the service before it starts. Enrolled already, or nothing to enrol with: nothing to do.
+    [ -s "$STATE/agent.json" ] && exit 0
+    SERVER=$(setting SERVER); ENROLL_KEY=$(setting ENROLL_KEY); MODE=$(setting MODE); LABEL=$(setting LABEL)
+    [ -n "$SERVER" ] && [ -n "$ENROLL_KEY" ] || exit 0
+    # --patient: a whole fleet enrolling at once waits and retries instead of hammering the service.
+    SENTINEL_ENROLL_KEY=$ENROLL_KEY exec "$AGENT" --state-dir "$STATE" enroll --patient --server "$SERVER" --mode "${MODE:-kill}" ${LABEL:+--label "$LABEL"}
+    ;;
+  run)
+    MODE=$(setting MODE); CLEAN=$(setting CLEAN); UPDATE=$(setting UPDATE); LEARN_HOURS=$(setting LEARN_HOURS); SHIELD=$(setting SHIELD)
+    exec "$AGENT" --state-dir "$STATE" run --mode "${MODE:-kill}" --clean "${CLEAN:-on}" --update "${UPDATE:-on}" --learn "${LEARN_HOURS:-24}" --shield "${SHIELD:-on}"
+    ;;
+  update)
+    # The agent says 10 when it replaced its own program file: the service is restarted to run the new one.
+    CODE=0
+    "$AGENT" --state-dir "$STATE" "$@" || CODE=$?
+    if [ "$CODE" = 10 ]; then restart; exit 0; fi
+    exit "$CODE"
+    ;;
+  *)
+    exec "$AGENT" --state-dir "$STATE" "$@"
+    ;;
+esac
