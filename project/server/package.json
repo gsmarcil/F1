@@ -1,0 +1,6 @@
+{
+  "name": "sentinel-service",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/service.test.mjs test/decide.test.mjs test/cloud.test.mjs test/mesh.test.mjs test/growth.test.mjs test/scale.test.mjs test/edge.test.mjs", "local": "node local.mjs" }
+}
