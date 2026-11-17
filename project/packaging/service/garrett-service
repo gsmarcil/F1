@@ -1,0 +1,41 @@
+#!/bin/sh
+# garrett-service: your own Sentinel service on this machine.
+#
+#   sudo garrett-service join       the commands that join other machines to this service
+#   sudo garrett-service devices    the machines that report here
+#   sudo garrett-service cases      the open cases
+#   sudo garrett-service token      the operator token, for the API described in the README
+#   garrett-service status          whether it is running
+set -eu
+ETC=/etc/garrett-service
+BASE=${GARRETT_BASE:-https://gary23w.github.io/sentinels}
+setting() { sed -n "s/^$1=//p" "$ETC/service.conf" | tail -n 1; }
+need_root() { [ -r "$ETC/service.conf" ] || { echo "Run this as root (put sudo before it)." >&2; exit 1; }; }
+# The service's own certificate is the only one trusted for these local requests.
+api() { curl -fsS --cacert "$ETC/tls.crt" -H "Authorization: Bearer $(setting ADMIN_TOKEN)" "https://127.0.0.1:$(setting PORT)$1"; }
+case "${1:-}" in
+  join)
+    need_root
+    PIN=$(openssl x509 -in "$ETC/tls.crt" -outform der | sha256sum | cut -d' ' -f1)
+    SERVER="https://$(setting ADDRESS):$(setting PORT)"
+    KEY="$(setting ENROLL_KEY).$PIN"
+    echo "Join a Linux or macOS machine (run on that machine):"
+    echo
+    echo "  curl -fsSL $BASE/install.sh | sudo sh -s -- --server $SERVER --key $KEY"
+    echo
+    echo "Join a Windows machine (elevated PowerShell on that machine):"
+    echo
+    echo "  \$env:GARRETT_SERVER='$SERVER'; \$env:GARRETT_KEY='$KEY'; irm $BASE/install.ps1 | iex"
+    echo
+    echo "Anyone who has these commands can add a machine to your service, so keep them private."
+    echo "Machines must be able to reach $SERVER. If they know this machine by another name or address,"
+    echo "edit ADDRESS in $ETC/service.conf and run this again."
+    echo "See what they report:  sudo garrett-service devices   sudo garrett-service cases"
+    ;;
+  devices) need_root; api /v1/devices; echo ;;
+  cases) need_root; api "/v1/cases?state=open"; echo ;;
+  token) need_root; setting ADMIN_TOKEN ;;
+  ready) need_root; curl -fsS --cacert "$ETC/tls.crt" -o /dev/null "https://127.0.0.1:$(setting PORT)/v1/pulse" ;;
+  status) systemctl status garrett-service.service --no-pager ;;
+  *) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

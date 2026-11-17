@@ -1,0 +1,23 @@
+# garrett-service: your own Sentinel service. It runs as an unprivileged user: it only answers the machines that
+# report to it and keeps their cases; it never touches this machine's processes.
+[Unit]
+Description=garrett-service (Sentinel service)
+Documentation=https://github.com/gary23w/sentinels
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=@NODE@ --disable-warning=ExperimentalWarning /usr/lib/garrett-service/serve.mjs /etc/garrett-service/service.conf
+Restart=always
+RestartSec=5
+User=garrett-service
+Group=garrett-service
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/garrett-service
+
+[Install]
+WantedBy=multi-user.target

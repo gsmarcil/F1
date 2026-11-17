@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sentinels(8) - host intrusion response</title>
+<meta name="description" content="Sentinels host intrusion detection and response. Install the garrett agent on Linux, macOS or Windows; run the fleet service yourself or request managed hosting.">
+<meta property="og:title" content="sentinels(8) - host intrusion response">
+<meta property="og:description" content="Install and operate the garrett host intrusion sentinel.">
+<meta property="og:url" content="https://gary23w.github.io/sentinels/">
+<meta name="twitter:card" content="summary">
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html { background: #f6f5f0; }
+body { max-width: 80ch; margin: 0 auto; padding: 1rem 1.25rem 3rem; color: #1c1c1b; font: 16px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+a { color: #165278; text-decoration: underline; text-underline-offset: 2px; }
+a:hover, a:focus-visible { color: #0b334c; }
+.masthead, .foot { display: flex; justify-content: space-between; gap: 1rem; font-size: .92rem; }
+.masthead { padding-bottom: .45rem; border-bottom: 1px solid #8a8a83; }
+.masthead h1 { font: inherit; font-weight: 700; margin: 0; }
+.jump { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin: 1rem 0 1.5rem; font-size: .88rem; }
+h2 { margin: 1.65rem 0 .45rem; font-size: 1rem; line-height: inherit; letter-spacing: .02em; }
+p, dl, pre { margin: .5rem 0 .7rem 2ch; }
+dt { font-weight: 700; margin-top: .6rem; }
+dd { margin: .1rem 0 .6rem 2ch; }
+pre { padding: .55rem 0; border-top: 1px solid #c4c4bd; border-bottom: 1px solid #c4c4bd; white-space: pre-wrap; overflow-wrap: anywhere; }
+code { font: inherit; }
+.note { color: #494944; font-size: .92rem; }
+.foot { margin-top: 2.4rem; padding-top: .4rem; border-top: 1px solid #8a8a83; }
+section { scroll-margin-top: 1rem; }
+@media (max-width: 38rem) { .masthead .middle { display: none; } body { font-size: 15px; } }
+</style>
+</head>
+<body id="top">
+<header class="masthead">
+  <h1>SENTINELS(8)</h1><span class="middle">System Administration</span><span>SENTINELS(8)</span>
+</header>
+<nav class="jump" aria-label="Sections">
+  <a href="#name">NAME</a><a href="#description">DESCRIPTION</a><a href="#benchmarks">BENCHMARKS</a><a href="#installation">INSTALLATION</a><a href="#fleet">FLEET</a><a href="#see-also">SEE ALSO</a><a href="https://github.com/gary23w/sentinels">Star the Repo</a>
+</nav>
+<main>
+<section id="name">
+<h2>NAME</h2>
+<p><strong>sentinels</strong> - host intrusion detection and response</p>
+</section>
+
+<section id="synopsis">
+<h2>SYNOPSIS</h2>
+<pre><code>garrett status
+garrett cases
+garrett trust|stop|release|restore &lt;case&gt;
+garrett update [--check]</code></pre>
+<p>Supported hosts: Linux, macOS, Windows.</p>
+</section>
+
+<section id="description">
+<h2>DESCRIPTION</h2>
+<p><strong>garrett</strong> watches running programs and their connections on the host. It scores activity locally and can pause or end a program it judges hostile. A web server starting a shell that downloads a script is one behavior it looks for.</p>
+<p>A case records the signals and the action taken. The agent can quarantine dropped files and disable a cron job, Run key or service used for persistence. <code>garrett restore &lt;case&gt;</code> reverses cleanup after a mistaken stop.</p>
+<p>The local agent is one program file and needs no account or kernel module.</p>
+</section>
+
+<section id="benchmarks">
+<h2>BENCHMARKS</h2>
+<p>Current internal stopping-time figures: about 20 ms for rapid process-chain scenarios; under 5 ms for selected tool-driven scenarios. The test setup, clock boundaries, sample size and raw results have not yet been added to the <a href="https://github.com/gary23w/sentinels#what-you-get">README</a>. These figures are not a guarantee for every host or attack.</p>
+</section>
+
+<section id="modes">
+<h2>RESPONSE MODES</h2>
+<dl>
+  <dt>kill</dt><dd>End the program and its child processes. Default.</dd>
+  <dt>pause</dt><dd>Freeze the program until an operator decides.</dd>
+  <dt>decide</dt><dd>Freeze the program, then ask the service's configured model to stop, release or hold it.</dd>
+  <dt>report</dt><dd>Record the case without stopping the program.</dd>
+</dl>
+</section>
+
+<section id="ai">
+<h2>AI ANALYSIS</h2>
+<p>Optional. A configured service model can summarize a case or decide what happens to a frozen program in <code>decide</code> mode. The default local <code>kill</code> path does not call a model.</p>
+</section>
+
+<section id="installation">
+<h2>INSTALLATION</h2>
+<p>Linux and macOS:</p>
+<pre><code>curl -fsSL https://gary23w.github.io/sentinels/install.sh | sudo sh</code></pre>
+<p>Windows, from an elevated PowerShell:</p>
+<pre><code>irm https://gary23w.github.io/sentinels/install.ps1 | iex</code></pre>
+<p>Or download <a href="garrett-windows.zip">garrett-windows.zip</a>, unpack it and run <code>Install garrett.cmd</code>.</p>
+<p>To start with alerts only:</p>
+<pre><code>curl -fsSL https://gary23w.github.io/sentinels/install.sh | sudo sh -s -- --mode report</code></pre>
+</section>
+
+<section id="packages">
+<h2>APT REPOSITORY</h2>
+<pre><code>curl -fsSL https://gary23w.github.io/sentinels/garrett.gpg | sudo tee /usr/share/keyrings/garrett.gpg &gt;/dev/null
+echo "deb [signed-by=/usr/share/keyrings/garrett.gpg] https://gary23w.github.io/sentinels stable main" | sudo tee /etc/apt/sources.list.d/garrett.list
+sudo apt update &amp;&amp; sudo apt install garrett</code></pre>
+</section>
+
+<section id="fleet">
+<h2>FLEET SERVICE</h2>
+<p>Run the service on your own hardware to collect cases and share learned attack patterns across enrolled hosts. Cases stay on your service.</p>
+<pre><code>curl -fsSL https://gary23w.github.io/sentinels/service.sh | sudo sh</code></pre>
+<p>Windows service installation, from an elevated PowerShell:</p>
+<pre><code>irm https://gary23w.github.io/sentinels/service.ps1 | iex</code></pre>
+<p>Enrol another host:</p>
+<pre><code>curl -fsSL https://gary23w.github.io/sentinels/install.sh | sudo sh -s -- --server https://your-service --key &lt;enrolment key&gt;</code></pre>
+<p>For managed hosting, email <a href="mailto:info@garrettstimpson.ca?subject=Sentinels%20managed%20hosting">info@garrettstimpson.ca</a>.</p>
+</section>
+
+<section id="updates">
+<h2>UPDATES</h2>
+<p>The agent checks for new versions and verifies the project's signature before installing one. Set <code>UPDATE=off</code> in its configuration file to update by hand. The package signing key is <code>6857 EBCB BEF5 1040 C3F2 0107 3626 88BF C238 AB45</code>. See <a href="SHA256SUMS">checksums</a> and the <a href="SHA256SUMS.asc">signed checksum file</a>.</p>
+</section>
+
+<section id="see-also">
+<h2>SEE ALSO</h2>
+<p><a href="manual.html">garrett(8) manual</a>, <a href="https://github.com/gary23w/sentinels">source and README</a>, <a href="https://github.com/gary23w/sentinels/releases">releases</a>.</p>
+<p class="note">The default mode can end a program it judges hostile. Read the manual before installing on a production host.</p>
+</section>
+</main>
+<footer class="foot"><span>Sentinels</span><a href="#top">Back to top</a></footer>
+</body>
+</html>
