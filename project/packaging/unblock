@@ -1,0 +1,4 @@
+#!/bin/sh
+# Remove the one firewall table garrett owns, if it made one.
+command -v nft >/dev/null 2>&1 && nft delete table inet garrett 2>/dev/null
+exit 0

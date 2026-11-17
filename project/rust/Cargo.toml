@@ -1,0 +1,28 @@
+[package]
+name = "garrett"
+version = "1.7.0"
+edition = "2021"
+license = "MIT"
+description = "garrett: the Sentinel agent. A host intrusion sentinel that stops what it catches."
+repository = "https://github.com/gary23w/sentinels"
+publish = false
+
+# Every outside library is listed here and in NOTICES.md with its licence, and pinned by Cargo.lock.
+[dependencies]
+regex = "1"
+serde_json = "1"
+sha2 = "0.10"
+# HTTPS to the service: rustls with the ring provider, and the public certificate authorities (the Mozilla list).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+# The signature on the update list (Ed25519). The same library rustls already uses.
+ring = "0.17"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
