@@ -1,0 +1,15 @@
+// The tail Worker that watches your other Workers (tail.mjs). Copy this file to wrangler.jsonc, then:
+//
+//   npx wrangler secret put SENTINEL_TOKEN     (your service's INGEST_TOKEN)
+//   npx wrangler deploy
+//
+// and add to each Worker you want watched:   "tail_consumers": [{ "service": "garrett-edge" }]
+// Tail Workers need a paid Workers plan.
+{
+  "name": "garrett-edge",
+  "main": "tail.mjs",
+  "compatibility_date": "2026-11-01",
+  "vars": {
+    "SENTINEL_URL": "https://your-sentinel-service.example"
+  }
+}
