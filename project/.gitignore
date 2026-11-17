@@ -1,0 +1,16 @@
+# Build output
+target/
+dist/
+release/
+node_modules/
+*.deb
+
+# Never commit these: credentials, keys, local state
+*.pem
+*.key
+.env
+.env.*
+.dev.vars
+wrangler.jsonc
+agent.json
+*.sqlite

@@ -1,0 +1,20 @@
+Source: garrett
+Section: admin
+Priority: optional
+Maintainer: sentinels <noreply@sentinels.invalid>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/gary23w/sentinels
+Rules-Requires-Root: no
+
+Package: garrett
+Architecture: amd64 arm64
+Depends: ${misc:Depends}, iproute2
+Recommends: nftables
+Description: host intrusion sentinel that stops what it catches
+ garrett watches this machine's running programs and their connections,
+ scores them on the machine, and pauses or ends a program it judges hostile.
+ .
+ It reports cases to a Sentinel service you run yourself, applies what that
+ service learned from earlier attacks, and shares what one machine learns
+ with the rest of your machines.

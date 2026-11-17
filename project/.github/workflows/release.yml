@@ -1,0 +1,148 @@
+# Build a garrett release from the commit this runs on. Nothing here is signed and nothing is published: the
+# signing keys are kept off GitHub on purpose, so that nobody who gets into this repository can put a program on
+# the machines that update themselves from it. What this leaves is one download, "release", with everything
+# ready to sign:
+#
+#   dist/   what goes on the GitHub release: the Debian packages, the bundles, the program files, SHA256SUMS
+#   site/   what goes on the project's site: the apt repository, the installers, the update list, the manual
+#
+# Then, on the machine that holds the keys:   sh packaging/sign-release.sh <folder>
+#                                             sh packaging/publish-release.sh <folder>
+#
+# It runs for every tag that starts with v, or by hand:   gh workflow run release.yml --ref <tag or branch>
+#
+#   garrett-linux-x86_64, garrett-linux-aarch64   statically linked (musl): they run on any Linux of that processor
+#   garrett-linux-armv7                           the same for 32-bit ARM boards and devices, built and tested by
+#                                                 cross-compiling (the tests run under an emulated processor)
+#   garrett-macos                                 one file for Apple silicon and Intel
+#   garrett-windows.exe                           64-bit Windows, with no runtime to install
+#
+# The folders of the build machines are not kept in the program files: they are written as `home` and `garrett`.
+name: release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  linux:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, name: garrett-linux-x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, name: garrett-linux-aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+          rustup target add ${{ matrix.target }}
+      - name: Test
+        run: cd rust && cargo test --release --locked
+      - name: Build
+        run: |
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=home --remap-path-prefix=$GITHUB_WORKSPACE=garrett"
+          cd rust && cargo build --release --locked --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/garrett ../${{ matrix.name }}
+          file ../${{ matrix.name }}
+          ../${{ matrix.name }} version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+  linux-armv7:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: cargo install cross --locked --version 0.2.5
+      - name: Test
+        run: |
+          # One test compares the agent's signal table with the service's: the build container is shown that folder.
+          export CROSS_CONTAINER_OPTS="--volume $GITHUB_WORKSPACE/server:/server:ro"
+          cd rust && cross test --release --locked --target armv7-unknown-linux-musleabihf
+      - name: Build
+        run: |
+          cd rust && cross build --release --locked --target armv7-unknown-linux-musleabihf
+          cp target/armv7-unknown-linux-musleabihf/release/garrett ../garrett-linux-armv7
+          file ../garrett-linux-armv7
+          file ../garrett-linux-armv7 | grep -q "ARM, EABI5.*statically linked"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garrett-linux-armv7
+          path: garrett-linux-armv7
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Test
+        run: cd rust && cargo test --release --locked
+      - name: Build
+        run: |
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$HOME=home --remap-path-prefix=$GITHUB_WORKSPACE=garrett"
+          cd rust
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output ../garrett-macos target/aarch64-apple-darwin/release/garrett target/x86_64-apple-darwin/release/garrett
+          file ../garrett-macos
+          ../garrett-macos version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garrett-macos
+          path: garrett-macos
+  windows:
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        shell: bash
+        run: cd rust && cargo test --release --locked
+      - name: Build
+        shell: bash
+        run: |
+          export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$(cygpath -w "$HOME")=home --remap-path-prefix=$(cygpath -w "$GITHUB_WORKSPACE")=garrett"
+          cd rust && cargo build --release --locked
+          cp target/release/garrett.exe ../garrett-windows.exe
+          ../garrett-windows.exe version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: garrett-windows.exe
+          path: garrett-windows.exe
+
+  # Pack what was built: Debian packages, the apt repository, the bundles, the update list, the site.
+  assemble:
+    needs: [linux, linux-armv7, macos, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+      - name: Tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q build-essential debhelper apt-utils lintian mandoc
+      - name: Pack
+        run: sh packaging/assemble-release.sh built release
+      - name: The packages are sound
+        run: |
+          for deb in release/dist/*.deb; do
+            echo "== $(basename "$deb")"
+            dpkg-deb -I "$deb" | grep -E "Package|Version|Architecture|Depends"
+            lintian "$deb" 2>&1 | grep -v "statically-linked-binary" | cut -c1-170 | head -12
+          done
+          sudo apt-get install -y -q ./release/dist/garrett_*_amd64.deb
+          test "$(garrett version)" = "garrett $(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)"
+          sudo apt-get purge -y -q garrett
+      - name: Nothing in it says where it was built
+        run: |
+          if grep -rIl -e "/home/runner" -e "runneradmin" -e "/Users/runner" release; then echo "a build folder is named in a published file"; exit 1; fi
+          if grep -rl -a -e "/home/runner/work" -e "D:\\a\\" release/dist/garrett-linux-* release/dist/garrett-macos release/dist/garrett-windows.exe; then echo "a build folder is named in a program file"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release

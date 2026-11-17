@@ -1,0 +1,167 @@
+garrett (1.7.0) stable; urgency=medium
+
+  * At the network card. Two things on the wire that no program on the
+    machine starts are now reported; nothing is done about either, because
+    what is wrong is on another machine.
+    - Another machine on the network starts answering in place of the
+      gateway. The system's table of neighbours is read every two seconds
+      (every thirty on a Mac) and the change is reported the moment the
+      gateway's hardware address becomes one that already belongs to
+      another machine. A new router is learned without a word.
+    - On Linux, a machine on the network tries port after port. The first
+      packet of each arriving connection attempt is read at the network
+      card: who sent it and which port it asked for, never what follows.
+      Thirty different ports from one neighbour in a minute are reported.
+      Scans from the open internet are not.
+  * garrett hardware also says whether the gateway could be read.
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 23:30:00 +0000
+
+garrett (1.6.0) stable; urgency=medium
+
+  * Below the system. The agent reads what the machine says about its
+    firmware and its boot chain, remembers it, and reports a change that no
+    update explains. It only reads; nothing down there is ever changed.
+    - Secure Boot (on a Mac, System Integrity Protection) was on and is now
+      off.
+    - The firmware's list of what to start has a new or changed entry.
+    - The code the machine starts from changed: the boot sector of a disk,
+      the space behind it where GRUB keeps its core on a BIOS machine, or a
+      boot loader file on the firmware's partition, and no boot loader
+      update was installed (Linux and Windows).
+    - The firmware is older than it was.
+    - The security chip's measurement of the firmware changed while the
+      firmware still gives the same version and date.
+    - On Linux, a kernel module is loaded that is not among the modules
+      installed for the running kernel.
+    - Windows was restarted with its driver signature checks off.
+  * garrett hardware shows what could be read on this machine and whether
+    any of it changed since the agent's last reading.
+  * More command lines are recognised: a kernel module loaded from a
+    temporary or home folder, driver signature checks switched off, the
+    system's check of what may run switched off, and the firmware chip
+    written from the running system.
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 23:00:00 +0000
+
+garrett (1.5.0) stable; urgency=medium
+
+  * Privilege escalation is reported as it happens. On Linux: a root shell
+    that an ordinary user's program started without going through su, sudo
+    or any other program that grants root, and a root shell that su, passwd
+    or a program like them turned into directly, which they never do unless
+    they were tampered with. On Windows: a shell running as SYSTEM under a
+    program of an ordinary account. These are reported, never ended.
+  * A shell under a system helper that starts none is reported: winlogon,
+    lsass, ctfmon and WerFault on Windows; the kernel's helper thread and
+    the network share sign-in helper on Linux.
+  * A new SSH sign-in key added to an account while nobody is signed in over
+    SSH is reported. The key is left where it is.
+  * More command lines are recognised: the download warning removed from a
+    new file and AppleScript downloads on macOS; forfiles, mavinject, a
+    silent installer fetched from the internet, a boot setting that hides
+    memory and .NET loaders talking to the internet on Windows; a container
+    escape through the cgroup release agent on Linux; the keychain copied
+    out on macOS; firmware written to a storage drive.
+  * Web servers and edge systems: a script served from an uploads folder,
+    an object smuggled in a request or a cookie, and a long run of plus
+    signs are marked. ColdFusion and phar scripts count as scripts.
+  * A scheduled job that downloads from a bare internet address, and a macOS
+    login item that carries Apple's name but starts a program from a user's
+    folder, are reported when they appear.
+  * A program that is not a browser talking to the Telegram bot service is
+    weighed like one talking to a paste or file-drop host.
+  * A browser started where nobody can see it (off the screen and headless
+    or one dot in size, or hidden with an extension loaded) is reported:
+    password stealers open one that way to read what it has saved.
+  * A remote-control tool that runs from a download folder minutes after it
+    arrived is reported, the way a fake helpdesk has its victim start one.
+    One installed in the program folders is left alone.
+  * A program outside the program folders that asks an outside service for
+    the machine's public address has that counted against it.
+  * On macOS a script started from Script Editor is treated like one started
+    from a document, and a login item that borrows the name of Google's
+    updater is reported.
+  * The service tells agents which signals it knows, and a newer agent
+    keeps back the ones an older service would refuse.
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 22:00:00 +0000
+
+garrett (1.4.1) stable; urgency=medium
+
+  * A visitor confirmed as an attacker on an edge system stays refused when
+    they come back. In 1.4.0 their next request inside five minutes opened
+    the case again and took them off the refused list. An operator takes a
+    visitor off the list with "trust" or "reopen".
+  * The guard for Cloudflare Workers says which setting it needs when the
+    service is a Worker on the same account's workers.dev address.
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 18:00:00 +0000
+
+garrett (1.4.0) stable; urgency=medium
+
+  * Systems that cannot run the agent are covered through the service: an
+    edge system forwards marks of its requests (never the request text) and
+    each visitor is judged by the rules the agent applies to a web server.
+  * A forwarder and a guard for Cloudflare Workers come with the service.
+  * A 32-bit ARM agent for small boards and devices.
+  * The bundle installs garrett as an OpenRC service where there is no
+    systemd, and no longer refuses a machine that has no ss command.
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 12:00:00 +0000
+
+garrett (1.3.1) stable; urgency=medium
+
+  * The privacy shield no longer holds up the part of the agent that stops
+    attacks while it writes its firewall entries. In 1.3.0 an attack that
+    started at that moment could get through.
+  * macOS: switching the shield off removes every route the agent added.
+  * A garrett command whose output is piped into another program ends
+    quietly when that program stops reading.
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 01:30:00 +0000
+
+garrett (1.3.0) stable; urgency=medium
+
+  * The privacy shield, on unless switched off (SHIELD=off). It notes which
+    program on the machine talks to which advertising and tracking network,
+    and keeps that record on the machine ("garrett traffic").
+  * After the settling-in day a tracker is refused at the firewall when it
+    answers from a network of its own company and no program other than a
+    browser uses it here. A tracker that shares its addresses with sites
+    people visit is measured and never refused. No setting of the operating
+    system is changed.
+  * New commands: "garrett shield" (what is refused, what is left open and
+    why; on, off, allow <name>, cut <name>) and "garrett traffic".
+
+ -- sentinels <noreply@sentinels.invalid>  Mon, 16 Nov 2026 00:30:00 +0000
+
+garrett (1.2.0) stable; urgency=medium
+
+  * A fresh install settles in for a day (LEARN_HOURS). What is plainly an
+    attack is stopped from the first second; a program that only its score
+    speaks against is reported and left running until its owner judges it.
+  * On a machine with no service, garrett learns from its owner's verdicts:
+    signals they keep calling theirs count for less, ones they keep
+    confirming count for more, and two signals that confirmed attacks share
+    become a sign of attack there. No model is involved.
+  * New commands: "garrett confirm <case>" (that was an attack) and
+    "garrett learned" (what this machine has learned; --reset forgets it).
+
+ -- sentinels <noreply@sentinels.invalid>  Sun, 15 Nov 2026 23:30:00 +0000
+
+garrett (1.1.0) stable; urgency=medium
+
+  * First release from the sentinels repository.
+  * The agent keeps itself current: it installs each new version by
+    itself, after checking the project's signature on it. UPDATE=off in
+    /etc/garrett/garrett.conf turns that off. "garrett update" does it now.
+  * Linux: a burst of failed SSH sign-ins from one address is reported.
+  * Windows: startup entries that appear while the agent watches are judged,
+    and switched off when they run what an intruder would.
+  * A service that calls back the address that attacked it has that one
+    address refused for an hour.
+  * Windows: the agent no longer takes its own Security-log lookup for an
+    attack.
+
+ -- sentinels <noreply@sentinels.invalid>  Sun, 15 Nov 2026 21:00:00 +0000

