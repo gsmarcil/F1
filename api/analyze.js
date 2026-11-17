@@ -18,6 +18,7 @@ function sha256(value) {
 
 export default async function handler(req, res) {
   const adapterRequestId = randomUUID();
+  const reportingTag = `sentinels-adapter:${adapterRequestId}`;
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Lab-Request-Id', adapterRequestId);
@@ -66,7 +67,12 @@ export default async function handler(req, res) {
   try {
     const response = await fetch('https://ai-gateway.vercel.sh/v1/chat/completions', {
       method: 'POST',
-      headers: { Authorization: 'Bearer ' + gatewayKey, 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: 'Bearer ' + gatewayKey,
+        'Content-Type': 'application/json',
+        'ai-reporting-tags': `sentinels-independent-ab,${reportingTag}`,
+        'ai-reporting-user': 'sentinels-independent-ab'
+      },
       body: upstreamRequestBody,
       signal: controller.signal
     });
@@ -74,10 +80,20 @@ export default async function handler(req, res) {
     const receivedAtMonotonicMs = performance.now();
     const rawResponseBody = await response.text();
     const upstreamRequestId = response.headers.get('x-request-id') || response.headers.get('x-vercel-id');
+    let data = null;
+    try { data = JSON.parse(rawResponseBody); } catch { /* Preserved below as raw evidence. */ }
+    const generationId = typeof data?.id === 'string' ? data.id : null;
     const evidence = {
       adapter_request_id: adapterRequestId,
       provider: 'vercel-ai-gateway',
       model,
+      generation_id: generationId,
+      independent_log: {
+        source: 'Vercel AI Gateway Request Logs',
+        generation_id: generationId,
+        reporting_tag: reportingTag,
+        sent_at_utc: sentAtUtc
+      },
       sent_at_utc: sentAtUtc,
       response_received_at_utc: receivedAtUtc,
       upstream_latency_ms: Math.round((receivedAtMonotonicMs - sentAtMonotonicMs) * 1000) / 1000,
@@ -97,10 +113,7 @@ export default async function handler(req, res) {
         evidence
       });
     }
-
-    let data;
-    try { data = JSON.parse(rawResponseBody); }
-    catch { return res.status(502).json({ error: 'invalid_upstream_json', request_id: adapterRequestId, evidence }); }
+    if (!data) return res.status(502).json({ error: 'invalid_upstream_json', request_id: adapterRequestId, evidence });
 
     let raw = data?.choices?.[0]?.message?.content;
     if (Array.isArray(raw)) raw = raw.map(item => item?.text || '').join('');
