@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+# The agent is one program file, built beforehand by the release workflow (see packaging/build-deb.sh) and
+# checked there. It is statically linked and already stripped: there is nothing here to build, test or strip.
+override_dh_auto_build override_dh_auto_test override_dh_strip override_dh_dwz override_dh_shlibdeps override_dh_makeshlibs:
+
+# Start on install only where the unit's conditions allow it; restart on upgrade.
+override_dh_installsystemd:
+	dh_installsystemd --restart-after-upgrade
+
+# xz, so the package also opens on systems older than the one that built it.
+override_dh_builddeb:
+	dh_builddeb -- -Zxz

@@ -1,0 +1,4 @@
+prebuilt/garrett-agent usr/lib/garrett
+packaging/unblock usr/lib/garrett
+packaging/garrett usr/bin
+rust/NOTICES.md usr/share/doc/garrett

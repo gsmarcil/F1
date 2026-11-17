@@ -1,0 +1,25 @@
+# garrett: the Sentinel agent as a system service. Running as root lets it see every process and stop a hostile
+# program whoever owns it. With no service to report to, it protects this machine by itself.
+[Unit]
+Description=garrett (Sentinel agent)
+Documentation=https://github.com/gary23w/sentinels
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Enrols from /etc/garrett/garrett.conf when that file names a service and this machine is not enrolled yet.
+ExecStartPre=/usr/bin/garrett auto
+ExecStart=/usr/bin/garrett run
+# Whatever addresses the agent refused are let through again when it stops.
+ExecStopPost=-/usr/lib/garrett/unblock
+Restart=always
+RestartSec=20
+TimeoutStartSec=infinity
+User=root
+StateDirectory=garrett
+StateDirectoryMode=0700
+NoNewPrivileges=true
+# Home folders stay writable: cleaning up after a stopped program has to reach startup files and dropped files there.
+
+[Install]
+WantedBy=multi-user.target

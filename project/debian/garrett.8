@@ -1,0 +1,264 @@
+.TH GARRETT 8 "November 2026" "garrett" "System Administration"
+.SH NAME
+garrett \- host intrusion sentinel that stops what it catches
+.SH SYNOPSIS
+.B garrett enroll
+.B \-\-server
+.I address
+.RB [ \-\-key
+.IR key ]
+.RB [ \-\-mode
+.IR kill | decide | pause | report ]
+.RB [ \-\-label
+.IR name ]
+.br
+.B garrett status
+.br
+.B garrett forget
+.br
+.B garrett cases
+.br
+.B garrett trust\fR|\fBstop\fR|\fBrelease\fR|\fBrestore
+.I case
+.br
+.B garrett confirm
+.I case
+.br
+.B garrett learned
+.RB [ \-\-reset ]
+.br
+.B garrett shield
+.RB [ on | off | allow
+.IR name | \fBcut\fR
+.IR name ]
+.br
+.B garrett traffic
+.br
+.B garrett hardware
+.br
+.B garrett update
+.RB [ \-\-check ]
+.br
+.B garrett run
+.SH DESCRIPTION
+.B garrett
+watches this machine's running programs and their connections, scores them on
+the machine, and pauses or ends a program it judges hostile. Installed
+with nothing else, it protects the machine it is on and keeps its cases there.
+Enrolled, it reports cases to a Sentinel service that you run, and applies what
+that service has learned from the rest of your machines.
+.PP
+It normally runs as the
+.B garrett
+systemd service. Enrolling starts the service.
+.SH COMMANDS
+.TP
+.B enroll
+Enrol this machine with a Sentinel service and start the service. The
+enrolment key may be given in the environment variable
+.B SENTINEL_ENROLL_KEY
+instead of on the command line.
+.TP
+.B status
+Show which service this machine reports to, and its response mode.
+.TP
+.B forget
+Stop the service and remove this machine's credential.
+.TP
+.B cases
+List the latest cases on this machine.
+.TP
+.BI trust " case"
+This program is mine: leave it alone from now on.
+.TP
+.BI stop " case" "\fR, \fP" release " case"
+Decide a program the agent paused: end it, or let it continue.
+.TP
+.BI restore " case"
+Put back everything that was cleaned up after a stop: quarantined files and
+switched-off startup entries.
+.TP
+.BI confirm " case"
+That was an attack. If the program runs again the agent will not leave it
+alone, and the verdict is something it learns from.
+.TP
+.B learned
+What this machine has learned from your verdicts, and whether it is still
+settling in.
+.B \-\-reset
+forgets it. See
+.BR LEARNING .
+.TP
+.B shield
+The privacy shield: which trackers are refused at the firewall, which are left
+open and why.
+.B on
+and
+.B off
+switch it on this machine.
+.BI allow " name"
+never refuses a tracker;
+.BI cut " name"
+refuses it although a program here uses it. See
+.BR PRIVACY .
+.TP
+.B traffic
+Which programs on this machine were seen talking to which trackers.
+.TP
+.B hardware
+What this machine says about its firmware, its boot chain and its kernel, and
+whether any of it changed since the agent last read it. See
+.BR "BELOW THE SYSTEM" .
+.TP
+.B update
+Install the newest version now.
+.B \-\-check
+only says whether there is one. The running agent does this by itself a few
+times a day; see
+.BR UPDATES .
+.TP
+.B run
+Watch and report in the foreground. The service runs this.
+.SH RESPONSE MODES
+.TP
+.B kill
+End a hostile program and everything it started, at once. The default.
+.TP
+.B decide
+Freeze it, then let the service's decision model say stop, release or hold.
+.TP
+.B pause
+Freeze it and wait for an operator.
+.TP
+.B report
+Only report.
+.PP
+The service may hold a machine to a lower mode than it asked for.
+.SH FILES
+.TP
+.I /etc/garrett/garrett.conf
+Optional, mode 0600. Lines
+.BR SERVER= ,
+.BR ENROLL_KEY= ,
+and optionally
+.BR MODE= ,
+.BR LABEL= ,
+.BR CLEAN=off ,
+.BR UPDATE=off ,
+.B SHIELD=off
+and
+.BR LEARN_HOURS= .
+When this file exists and the machine is not enrolled, the service enrols
+itself on first start.
+.TP
+.I /var/lib/garrett/
+This machine's credential and what the agent remembers about it.
+.SH LEARNING
+A fresh install settles in for a day
+.RB ( LEARN_HOURS ).
+What is plainly an attack, such as a web server starting a shell that
+downloads and runs a script, is stopped from the first second. A program that
+only its score speaks against is reported and left running, during that day
+and after it, until you say what it is with
+.B trust
+or
+.BR confirm :
+it was on the machine before garrett knew the machine, and may be yours.
+.PP
+On a machine with no service, every verdict you give
+.RB ( trust ,
+.BR restore ,
+.BR release ,
+.BR stop ,
+.BR confirm )
+is kept as the case's signals and nothing else. A signal you keep calling
+yours comes to count for less here, one you keep confirming for more, by at
+most two points, and never so far that a confirmed attack or a known attack
+pattern would go unreported. Two signals that your confirmed attacks share
+become a sign of attack on this machine. No model is involved. An enrolled
+machine learns from its service instead.
+.SH PRIVACY
+The privacy shield is on unless you switch it off. It changes no setting of
+the operating system. It looks up the names advertising and tracking networks
+are reached by and notes which program on this machine talks to them; that
+record stays on the machine.
+.PP
+After the settling-in day it refuses a tracker at the firewall when the
+tracker answers from a network of its own company, so that nothing else is
+behind the address, and no program other than a browser was seen using it
+here. A tracker that your own software uses is left open and named. A tracker
+that shares its addresses with sites people visit is measured and never
+refused, because refusing the address would break those sites. A browser can
+still reach a refused tracker through a proxy or a VPN.
+.SH BELOW THE SYSTEM
+An attack on the firmware or the boot chain survives a reinstall and is out of
+reach of anything that only watches programs. garrett cannot stand inside the
+firmware and never writes to it. It reads what the machine says about itself
+down there, every few minutes, remembers it, and reports a change that an
+update does not explain:
+.IP \(bu 2
+Secure Boot (on a Mac, System Integrity Protection) was on and is now off.
+.IP \(bu 2
+The firmware's list of what to start has a new or changed entry, which is
+where a boot kit puts itself. The entry a firmware update makes for itself is
+not reported.
+.IP \(bu 2
+The code the machine starts from changed: the boot sector of a disk, the space
+behind it where GRUB keeps its core on a BIOS machine, or a boot loader file on
+the firmware's partition, and no boot loader update was installed that would
+explain it. These are read once an hour.
+.IP \(bu 2
+The firmware is older than it was.
+.IP \(bu 2
+The security chip's measurement of the firmware changed while the firmware
+still gives the same version and date: its code was altered without an update.
+.IP \(bu 2
+On Linux, a kernel module is loaded that is not among the modules installed
+for the running kernel.
+.IP \(bu 2
+Windows was restarted with its driver signature checks off.
+.PP
+The first reading is the starting point and nothing is reported from it. A
+machine that does not tell one of these things (a virtual machine without a
+security chip, an old board) is simply not judged on it;
+.B garrett hardware
+shows what could be read. Nothing is ever changed or undone down there: each
+report is a case for you to judge.
+.SH AT THE NETWORK CARD
+Things happen on the wire, and at the sockets of the machine, that no program
+on it starts:
+.IP \(bu 2
+Another machine on the network starts answering in place of the gateway, so
+that what this machine sends out passes through it. garrett reads the system's
+table of neighbours every two seconds (every thirty on a Mac, and every thirty
+for IPv6 everywhere) and reports the moment the gateway's hardware address
+becomes that of a machine that was already on the network, or starts going
+back and forth between two, which is what happens while the true gateway and
+an impostor both keep answering. A new router is learned without a word.
+.IP \(bu 2
+On Linux and macOS, a machine on the network tries port after port here.
+garrett reads the first packet of each arriving connection attempt at the
+network card: who sent it and which port it asked for, never what follows.
+Thirty different ports from one neighbour in a minute are reported, once an
+hour for each neighbour. Scans from the open internet are not reported.
+.IP \(bu 2
+On Linux and Windows, a keyboard this machine has never had is plugged in and
+a command window opens within seconds: how a device that types by itself
+works. Only the names of the keyboards are read, never a key.
+.PP
+All of these are reported and nothing is done about them.
+.SH UPDATES
+The running agent asks the project's site a few times a day whether a newer
+version is out, and installs it. It installs nothing unless the site's list of
+program files carries the project's signature, names a version newer than the
+one installed, and matches the file it downloaded. Where this package is
+installed, apt does the installing from the project's signed repository.
+.B UPDATE=off
+in the configuration file turns this off.
+.SH FIREWALL
+When the service has fleet blocking on, garrett keeps one nftables table named
+.BR garrett .
+It is removed when the service stops and when the package is removed.
+.SH SEE ALSO
+.BR systemctl (1),
+.BR nft (8)
