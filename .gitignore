@@ -1,0 +1,10 @@
+.env
+.env.*
+*.db
+*.sqlite*
+*secret*
+*credential*
+*token*
+agent.json
+runtime.conf
+service.conf
