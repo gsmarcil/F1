@@ -1,0 +1,65 @@
+// Copy to wrangler.jsonc and fill in your own values. Nothing in this file is a secret.
+//
+//   npx wrangler d1 create sentinel
+//   npx wrangler d1 execute sentinel --remote --file=schema.sql
+//   npx wrangler secret put DATA_KEY       (32+ random characters: encrypts case evidence at rest)
+//   npx wrangler secret put ENROLL_KEY     (32+ random characters: lets a machine enrol)
+//   npx wrangler secret put ADMIN_TOKEN    (32+ random characters: lets an operator read cases and decide)
+//   npx wrangler deploy
+{
+  "name": "sentinel-service",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-01-01",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "sentinel", "database_id": "REPLACE-WITH-YOUR-D1-DATABASE-ID" }
+  ],
+  // Housekeeping: removes closed cases past their keep time and refreshes the watched addresses.
+  "triggers": { "crons": ["*/15 * * * *"] },
+  // Only needed for AI_PROVIDER "workers-ai".
+  "ai": { "binding": "AI" },
+  "vars": {
+    // What agents may do about a hostile program:
+    //   "kill"   end it at once on the machine
+    //   "decide" freeze it at once, then let the decision model below say stop, release or hold
+    //   "pause"  freeze it and wait for an operator to stop or release it
+    //   "report" do nothing
+    // Leave it empty for the default: "decide" when a model is configured below, otherwise "kill".
+    "RESPONSE_MODE": "",
+    // decide mode, when no model answers in time: "kill" (the default) ends the frozen program, "hold" keeps it
+    // frozen for an operator.
+    "DECISION_FALLBACK": "kill",
+    // "high-confidence" lets the model release a frozen program it is highly confident is ordinary. Left empty,
+    // only an operator can release.
+    "DECISION_RELEASE": "",
+    // "on" makes machines that may end programs also refuse traffic to and from addresses a stopped or confirmed
+    // attack on another machine called out to. Off by default.
+    "FLEET_BLOCK": "",
+    // "operators-and-model" lets a stop the decision model ordered count toward learned signal pairs. Left empty,
+    // only operators' verdicts teach anything.
+    "LEARN_FROM": "",
+    // "off" stops the service looking up the watched hosts' addresses for agents.
+    "WATCHLIST": "",
+    // "off" stops the service fetching the Tor Project's exit-node list for agents.
+    "TOR_EXITS": "",
+    // A guard against a leaked enrolment key: no more machines than this may enrol. Raise it to your fleet's size.
+    "MAX_DEVICES": "10000",
+    // Large fleets: how many quiet reports a second the database should see (the service stretches the reporting
+    // interval, five minutes to an hour, to hold this), how many pulse requests a second, and how long a closed
+    // case is kept.
+    "HEARTBEAT_WRITES_PER_SECOND": "25",
+    "PULSE_REQUESTS_PER_SECOND": "500",
+    "CASE_RETENTION_DAYS": "30",
+    // none | workers-ai | openai | custom   (see src/analyst.mjs)
+    "AI_PROVIDER": "none",
+    // For workers-ai: any Workers AI text-generation model your account can run.
+    "AI_MODEL": "",
+    // For openai (an OpenAI-compatible chat-completions endpoint) or custom: the base URL. The key is a secret:
+    //   npx wrangler secret put AI_API_KEY
+    "AI_BASE_URL": ""
+  }
+  // Optional: a separate token for whatever forwards your cloud audit records to POST /v1/cloud-events
+  // (the operator token also works):
+  //   npx wrangler secret put INGEST_TOKEN
+  // Optional: a webhook that receives a JSON alert for each new case (Slack-style "text" field included):
+  //   npx wrangler secret put ALERT_WEBHOOK_URL
+}
